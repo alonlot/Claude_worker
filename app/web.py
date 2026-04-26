@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
+import subprocess
 from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -26,7 +28,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
-        return templates.TemplateResponse("index.html", context(request, db, request.app.state.config))
+        return templates.TemplateResponse(request, "index.html", context(request, db, request.app.state.config))
 
     @app.post("/jira/scan")
     async def jira_scan(request: Request):
@@ -39,8 +41,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     @app.post("/queue/run-once")
     async def run_once(request: Request):
-        asyncio.create_task(worker.run_next())
-        request.app.state.flash = "Run started."
+        if db.queue_paused():
+            request.app.state.flash = "Queue is paused. Resume it before running tickets."
+        else:
+            asyncio.create_task(worker.run_next())
+            request.app.state.flash = "Run started."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/queue/start-interval")
@@ -53,6 +58,18 @@ def create_app(config: Config, db: Database) -> FastAPI:
     async def stop_interval(request: Request):
         worker.stop_interval()
         request.app.state.flash = "Interval runner stopped."
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/queue/pause")
+    async def pause_queue(request: Request):
+        db.set_state("queue_paused", "1")
+        request.app.state.flash = "Queue paused. Jira scans can still run."
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/queue/resume")
+    async def resume_queue(request: Request):
+        db.set_state("queue_paused", "0")
+        request.app.state.flash = "Queue resumed."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/queue/reorder")
@@ -92,12 +109,30 @@ def create_app(config: Config, db: Database) -> FastAPI:
             request.app.state.flash = f"Push failed: {exc}"
         return RedirectResponse("/", status_code=303)
 
+    @app.get("/notifications/unread")
+    async def unread_notifications():
+        rows = db.unread_notifications()
+        db.mark_notifications_read([int(row["id"]) for row in rows])
+        return JSONResponse(
+            [
+                {
+                    "id": row["id"],
+                    "run_id": row["run_id"],
+                    "level": row["level"],
+                    "title": row["title"],
+                    "message": row["message"],
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
+        )
+
     @app.get("/runs/{run_id}", response_class=HTMLResponse)
     async def run_detail(run_id: int, request: Request):
         detail = run_detail_context(request, db, request.app.state.config, run_id)
         if detail["run"] is None:
             return RedirectResponse("/", status_code=303)
-        return templates.TemplateResponse("run_detail.html", detail)
+        return templates.TemplateResponse(request, "run_detail.html", detail)
 
     @app.post("/runs/{run_id}/input")
     async def add_run_input(run_id: int, message: str = Form(...)):
@@ -130,12 +165,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     @app.get("/partials/status", response_class=HTMLResponse)
     async def status_partial(request: Request):
-        return templates.TemplateResponse("_status.html", context(request, db, request.app.state.config))
+        return templates.TemplateResponse(request, "_status.html", context(request, db, request.app.state.config))
 
     @app.get("/settings", response_class=HTMLResponse)
     async def settings(request: Request):
         active_config = request.app.state.config
         return templates.TemplateResponse(
+            request,
             "settings.html",
             {
                 "request": request,
@@ -147,6 +183,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "excluded_statuses_text": "\n".join(active_config.jira.excluded_statuses),
             },
         )
+
+    @app.post("/settings/test/{target}")
+    async def test_connection(target: str, request: Request):
+        try:
+            message = await run_connection_test(target, request.app.state.config)
+            request.app.state.flash = message
+        except Exception as exc:
+            request.app.state.flash = f"{target} test failed: {exc}"
+        return RedirectResponse("/settings", status_code=303)
 
     @app.post("/settings")
     async def save_settings(request: Request, config_text: str = Form(...)):
@@ -268,6 +313,7 @@ def context(request: Request, db: Database, config: Config) -> dict:
         "current_logs": current_logs,
         "current_questions": current_questions,
         "current_sub_agents": current_sub_agents,
+        "queue_paused": db.queue_paused(),
         "queue": db.fetchall(
             """
             SELECT q.*, t.summary, t.status
@@ -276,9 +322,30 @@ def context(request: Request, db: Database, config: Config) -> dict:
             ORDER BY q.priority ASC, q.id ASC
             """
         ),
+        "scan_preview": db.fetchall(
+            """
+            SELECT t.*,
+                CASE
+                    WHEN q.id IS NOT NULL THEN q.state
+                    ELSE ''
+                END AS queue_state
+            FROM tickets t
+            LEFT JOIN queue_items q ON q.ticket_key=t.key AND q.state IN ('queued', 'running')
+            ORDER BY t.updated_at DESC
+            LIMIT 100
+            """
+        ),
         "skipped": db.fetchall("SELECT * FROM tickets WHERE eligibility='skipped' ORDER BY updated_at DESC LIMIT 50"),
         "manual": db.fetchall("SELECT * FROM tickets WHERE eligibility!='eligible' ORDER BY updated_at DESC LIMIT 50"),
-        "done": db.fetchall("SELECT * FROM runs WHERE state IN ('done','needs_cr_fix','pushed','failed','cancelled') ORDER BY id DESC LIMIT 50"),
+        "done": db.fetchall(
+            """
+            SELECT r.*, t.summary
+            FROM runs r LEFT JOIN tickets t ON t.key=r.ticket_key
+            WHERE r.state IN ('done','needs_cr_fix','pushed','failed','cancelled')
+            ORDER BY r.id DESC LIMIT 50
+            """
+        ),
+        "notifications": db.fetchall("SELECT * FROM notifications ORDER BY id DESC LIMIT 10"),
         "allow_cr_fix": config.claude.allow_cr_fix,
         "interval_running": bool(request.app.state.worker.interval_task and not request.app.state.worker.interval_task.done()),
     }
@@ -333,3 +400,45 @@ def build_ide_url(run_id: int, run) -> str:
         )
     except (KeyError, ValueError):
         return ""
+
+
+async def run_connection_test(target: str, config: Config) -> str:
+    if target == "jira":
+        import httpx
+
+        if not config.jira.url or not config.jira.email or not config.jira.token:
+            raise RuntimeError("Jira URL, email, and token are required")
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                config.jira.url.rstrip("/") + "/rest/api/3/myself",
+                auth=(config.jira.email, config.jira.token),
+            )
+            resp.raise_for_status()
+        return "Jira connection OK."
+
+    if target == "git":
+        data = load_config_data()
+        test_repo = ((data.get("git") or {}).get("test_repo_url") or "").strip()
+        if test_repo:
+            await run_command(["git", "ls-remote", test_repo, "HEAD"], timeout=30)
+            return "Git remote/auth test OK."
+        version = await run_command(["git", "--version"], timeout=10)
+        return f"Git command OK. Add git.test_repo_url in raw YAML to test remote auth. {version.strip()}"
+
+    if target == "claude":
+        command = shlex.split(config.claude.command) + ["--version"]
+        output = await run_command(command, timeout=15)
+        return f"Claude command OK. {output.strip()}"
+
+    raise RuntimeError("Unknown connection test")
+
+
+async def run_command(args: list[str], timeout: int) -> str:
+    def _run() -> str:
+        proc = subprocess.run(args, text=True, capture_output=True, timeout=timeout, check=False)
+        output = (proc.stdout or proc.stderr or "").strip()
+        if proc.returncode != 0:
+            raise RuntimeError(output or f"{args[0]} exited with {proc.returncode}")
+        return output
+
+    return await asyncio.to_thread(_run)

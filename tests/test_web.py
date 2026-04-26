@@ -44,3 +44,26 @@ def test_run_detail_accepts_questions_and_mid_run_input(tmp_path):
     user_input = client.post(f"/runs/{run_id}/input", data={"message": "Use the compact layout."}, follow_redirects=False)
     assert user_input.status_code == 303
     assert db.fetchone("SELECT message FROM agent_inputs WHERE run_id=?", (run_id,))["message"] == "Use the compact layout."
+
+
+def test_queue_pause_and_notifications_routes(tmp_path):
+    config = Config()
+    config.app.database_path = str(tmp_path / "worker.sqlite3")
+    db = Database(config.app.database_path)
+    db.init()
+    db.add_notification("Done", "A-1", "success", 1)
+    app = create_app(config, db)
+    client = TestClient(app)
+
+    pause = client.post("/queue/pause", follow_redirects=False)
+    assert pause.status_code == 303
+    assert db.queue_paused() is True
+
+    resume = client.post("/queue/resume", follow_redirects=False)
+    assert resume.status_code == 303
+    assert db.queue_paused() is False
+
+    notes = client.get("/notifications/unread")
+    assert notes.status_code == 200
+    assert notes.json()[0]["title"] == "Done"
+    assert db.unread_notifications() == []

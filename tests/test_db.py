@@ -35,3 +35,18 @@ def test_agent_questions_inputs_and_subagents(tmp_path):
     assert len(sub_agents) == 1
     assert sub_agents[0]["status"] == "done"
     assert sub_agents[0]["progress"] == 100
+
+
+def test_notifications_and_queue_pause_state(tmp_path):
+    db = Database(tmp_path / "worker.sqlite3")
+    db.init()
+
+    assert db.queue_paused() is False
+    db.set_state("queue_paused", "1")
+    assert db.queue_paused() is True
+
+    note_id = db.add_notification("Finished", "A-1", "success", 7)
+    unread = db.unread_notifications()
+    assert unread[0]["id"] == note_id
+    db.mark_notifications_read([note_id])
+    assert db.unread_notifications() == []

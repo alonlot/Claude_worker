@@ -94,6 +94,22 @@ CREATE TABLE IF NOT EXISTS sub_agents (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sub_agents_run_name ON sub_agents(run_id, name);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER,
+    level TEXT NOT NULL DEFAULT 'info',
+    title TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS app_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -214,7 +230,9 @@ class Database:
                 (run_id, agent_name, question, padded[0], padded[1], padded[2], int(free_input_enabled)),
             )
             conn.commit()
-            return int(cur.lastrowid)
+            question_id = int(cur.lastrowid)
+        self.add_notification("Agent question waiting", question, "warning", run_id)
+        return question_id
 
     def answer_agent_question(self, question_id: int, answer: str, answer_source: str) -> None:
         self.execute(
@@ -254,6 +272,40 @@ class Database:
             """,
             (run_id, name, task, status, max(0, min(100, int(progress))), summary),
         )
+
+    def add_notification(self, title: str, message: str = "", level: str = "info", run_id: int | None = None) -> int:
+        with self.connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO notifications(run_id, level, title, message) VALUES (?, ?, ?, ?)",
+                (run_id, level, title, message),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def unread_notifications(self) -> list[sqlite3.Row]:
+        return self.fetchall("SELECT * FROM notifications WHERE read=0 ORDER BY id DESC LIMIT 20")
+
+    def mark_notifications_read(self, ids: list[int]) -> None:
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        self.execute(f"UPDATE notifications SET read=1 WHERE id IN ({placeholders})", tuple(ids))
+
+    def get_state(self, key: str, default: str = "") -> str:
+        row = self.fetchone("SELECT value FROM app_state WHERE key=?", (key,))
+        return row["value"] if row else default
+
+    def set_state(self, key: str, value: str) -> None:
+        self.execute(
+            """
+            INSERT INTO app_state(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
+            """,
+            (key, value),
+        )
+
+    def queue_paused(self) -> bool:
+        return self.get_state("queue_paused", "0") == "1"
 
     def set_queue_state(self, queue_id: int, state: str) -> None:
         self.execute(

@@ -56,8 +56,9 @@ The website is responsible for:
 - Displaying ticket number, ticket name, and short ticket description for active runs.
 - Displaying live logs.
 - Displaying queue, skipped tickets, manually runnable tickets, and completed runs.
-- Letting the user scan Jira, run once, start interval mode, stop interval mode, reorder queue,
-  enqueue a ticket, rerun a ticket, cancel current run, run CR fix, push branch, and edit config.
+- Letting the user scan Jira, preview scan results, run once, start interval mode, stop interval mode,
+  pause/resume queue execution, reorder queue, enqueue a ticket, rerun a ticket, cancel current run,
+  run CR fix, push branch, test connections, receive notifications, and edit config.
 - Editing config visually and as raw YAML.
 
 The worker is responsible for:
@@ -141,6 +142,7 @@ Known fields:
     git.username
     git.token
     git.remote_name
+    git.test_repo_url
 
     claude.command
     claude.args
@@ -216,6 +218,8 @@ Tables:
     agent_questions
     agent_inputs
     sub_agents
+    notifications
+    app_state
 
 The website reads these tables directly. Therefore the real worker must keep them compatible.
 
@@ -736,6 +740,70 @@ Website behavior:
 - Focused run page shows full sub-agent list.
 
 
+Table: notifications
+--------------------
+Purpose:
+
+    Stores user-visible completion/failure/attention notifications.
+
+Schema:
+
+    id INTEGER PRIMARY KEY AUTOINCREMENT
+    run_id INTEGER
+    level TEXT NOT NULL DEFAULT 'info'
+    title TEXT NOT NULL
+    message TEXT NOT NULL DEFAULT ''
+    read INTEGER NOT NULL DEFAULT 0
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+Recommended levels:
+
+    info
+    success
+    warning
+    error
+
+Worker behavior:
+
+- Insert a notification when a run finishes, fails, is cancelled, needs review/CR attention,
+  has a question waiting, or branch is pushed.
+- Keep title short.
+- Put useful context in message, usually ticket key and short status.
+- Set read = 0.
+
+Website behavior:
+
+- Dashboard shows recent notifications.
+- Browser JavaScript polls GET /notifications/unread.
+- The endpoint returns unread notifications as JSON and marks them read.
+- If browser notification permission is granted, the browser shows desktop notifications.
+
+
+Table: app_state
+----------------
+Purpose:
+
+    Stores small app-level state flags.
+
+Schema:
+
+    key TEXT PRIMARY KEY
+    value TEXT NOT NULL
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+Known keys:
+
+    queue_paused
+        "1" means queue execution is paused.
+        "0" or missing means queue execution is allowed.
+
+Worker behavior:
+
+- run_next() must not start a new ticket while queue_paused = "1".
+- scan_jira() may still run while queue is paused.
+- interval mode may still scan Jira, but it must not execute queued tickets while paused.
+
+
 8. Required Worker Interface
 ----------------------------
 The current app.web.create_app creates:
@@ -818,6 +886,15 @@ Routes and expected worker/database effects:
     POST /queue/stop-interval
         Calls worker.stop_interval().
 
+    POST /queue/pause
+        Website sets app_state.queue_paused = "1".
+        Worker should not start new queued tickets while paused.
+        Jira scans are still allowed.
+
+    POST /queue/resume
+        Website sets app_state.queue_paused = "0".
+        Worker may start queued tickets again.
+
     POST /queue/reorder
         Website directly updates queue_items.priority.
 
@@ -841,6 +918,11 @@ Routes and expected worker/database effects:
     POST /runs/{run_id}/push
         Calls worker.push_run(run_id).
 
+    GET /notifications/unread
+        Returns unread notifications as JSON.
+        Marks returned notifications read.
+        Used by browser notification polling.
+
     POST /runs/{run_id}/input
         Website inserts agent_inputs row with the user's mid-run message.
         Website also adds a logs row with phase = user.
@@ -858,6 +940,16 @@ Routes and expected worker/database effects:
 
     GET /settings
         Render visual config + raw YAML config.
+
+    POST /settings/test/jira
+        Tests Jira auth/config against Jira myself endpoint.
+
+    POST /settings/test/git
+        Tests git command.
+        If git.test_repo_url is set in raw YAML, tests remote/auth with git ls-remote.
+
+    POST /settings/test/claude
+        Tests claude.command by running it with --version.
 
     POST /settings
         Save raw YAML.
@@ -1077,6 +1169,9 @@ Recommended behavior:
 
 - If one ticket is already running, interval mode should not start another simultaneous run.
 - The worker should use a lock around run_next().
+- If app_state.queue_paused = "1", interval mode may scan Jira but must not execute run_next().
+- Pause does not cancel the currently running ticket; it only prevents the next ticket from starting.
+- Resume allows future queued tickets to start again.
 
 
 15. UI Expectations
@@ -1152,9 +1247,29 @@ Manual Ticket Selection:
 
 - Shows tickets where eligibility != eligible.
 
+Jira Scan Preview:
+
+- Dashboard shows the latest tickets from the tickets table.
+- Preview columns:
+
+      ticket key
+      summary
+      Jira status
+      eligibility
+      active queue state if queued/running
+      skip reason
+
+- This preview is read-only. Manual enqueue still happens from Manual Ticket Selection.
+
 Skipped Tickets:
 
 - Shows tickets where eligibility = skipped.
+
+Notifications:
+
+- Dashboard shows recent notification rows.
+- Browser notification polling runs from app/static/app.js.
+- The browser asks for notification permission and polls /notifications/unread every 10 seconds.
 
 
 16. Error Handling Rules
@@ -1343,8 +1458,13 @@ Do not:
 The real worker is integrated correctly when all of these are true:
 
 - Settings page still loads.
+- Connection test buttons exist for Jira, Git, and Claude.
+- Git connection test can use raw YAML git.test_repo_url for remote auth verification.
 - Scan Jira fills the tickets table.
+- Jira Scan Preview shows scanned tickets with eligibility, queue state, and skip reason.
 - Eligible tickets appear in Queue.
+- Pause queue prevents new ticket execution while still allowing Jira scans.
+- Resume queue allows execution again.
 - Skipped tickets show skip reasons.
 - Manual add works for skipped/non-eligible tickets.
 - Queue reorder changes priority.
@@ -1365,6 +1485,8 @@ The real worker is integrated correctly when all of these are true:
 - Review output is saved.
 - Do CR Fix works when enabled.
 - Push button pushes branch and marks pushed.
+- Run completion/failure/question/push events can create notifications.
+- Browser can fetch unread notifications from /notifications/unread.
 - Failed runs show a clear error.
 - No secrets appear in logs.
 - Tests pass.

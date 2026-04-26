@@ -1,7 +1,5 @@
 {% extends "base.html" %}
 {% block content %}
-{% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
-
 <section class="run-focus">
   <div class="panel">
     <div class="hero-head">
@@ -32,6 +30,30 @@
     <div class="meta">
       <span>{{ run.branch_name or "No branch yet" }}</span>
       <span>{{ run.workspace_path or "No workspace yet" }}</span>
+    </div>
+    <div class="run-facts">
+      <span><strong>Repo</strong>{{ run.repo_url or "-" }}</span>
+      <span><strong>Base</strong>{{ run.base_branch or "-" }}</span>
+      <span><strong>Created</strong>{{ run.created_at }}</span>
+      <span><strong>Finished</strong>{{ run.finished_at or "-" }}</span>
+    </div>
+    {% if run.error %}
+    <div class="inline-alert error-alert">{{ run.error }}</div>
+    {% endif %}
+    {% if run.review_output %}
+    <details class="review-box" open>
+      <summary>Review Output</summary>
+      <pre>{{ run.review_output }}</pre>
+    </details>
+    {% endif %}
+    <div class="row detail-actions">
+      {% if run.state in ["done", "needs_cr_fix", "pushed"] %}
+      <form method="post" action="/runs/{{ run.id }}/push"><button>Push branch</button></form>
+      {% endif %}
+      {% if run.review_output %}
+      <form method="post" action="/runs/{{ run.id }}/review-fix"><button class="secondary">Do CR Fix</button></form>
+      {% endif %}
+      <form method="post" action="/tickets/{{ run.ticket_key }}/rerun"><button class="secondary">Rerun ticket</button></form>
     </div>
   </div>
 

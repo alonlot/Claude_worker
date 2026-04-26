@@ -48,6 +48,8 @@ class Worker:
             await self.scan_jira()
         except Exception as exc:
             print(f"Jira scan failed: {exc}")
+        if self.db.queue_paused():
+            return
         await self.run_next()
 
     async def run_interval_forever(self) -> None:
@@ -71,6 +73,8 @@ class Worker:
             self.claude.cancel()
 
     async def run_next(self) -> int | None:
+        if self.db.queue_paused():
+            return None
         if self.lock.locked():
             return None
         async with self.lock:
@@ -84,10 +88,12 @@ class Worker:
                 self.db.set_queue_state(int(item["id"]), "done")
             except asyncio.CancelledError:
                 self.db.update_run(run_id, state="cancelled", error="cancelled", finished_at=datetime.utcnow().isoformat())
+                self.db.add_notification("Run cancelled", item["ticket_key"], "warning", run_id)
                 self.db.set_queue_state(int(item["id"]), "cancelled")
             except Exception as exc:
                 self._log(run_id, "error", str(exc))
                 self.db.update_run(run_id, state="failed", error=str(exc), finished_at=datetime.utcnow().isoformat())
+                self.db.add_notification("Run failed", f"{item['ticket_key']}: {exc}", "error", run_id)
                 self.db.set_queue_state(int(item["id"]), "failed")
             finally:
                 self.cancel_requested = False
@@ -133,6 +139,7 @@ class Worker:
             await self.run_cr_fix(run_id)
         else:
             self.db.update_run(run_id, state="done", progress=100, finished_at=datetime.utcnow().isoformat())
+            self.db.add_notification("Run finished", ticket["ticket_key"], "success", run_id)
 
     async def run_cr_fix(self, run_id: int) -> None:
         run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
@@ -152,6 +159,7 @@ class Worker:
             progress=100,
             finished_at=datetime.utcnow().isoformat(),
         )
+        self.db.add_notification("CR fix finished", run["ticket_key"], "success", run_id)
 
     def push_run(self, run_id: int) -> str:
         run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
@@ -162,6 +170,7 @@ class Worker:
         output = self.git.push_branch(Path(run["workspace_path"]), run["branch_name"])
         self.db.update_run(run_id, state="pushed", pushed_at=datetime.utcnow().isoformat())
         self._log(run_id, "git", output or "pushed")
+        self.db.add_notification("Branch pushed", run["ticket_key"], "success", run_id)
         return output
 
     def rerun_ticket(self, ticket_key: str) -> None:

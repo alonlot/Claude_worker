@@ -1,7 +1,5 @@
 {% extends "base.html" %}
 {% block content %}
-{% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
-
 <section class="settings-layout">
   <form method="post" action="/settings/visual" class="panel settings-form">
     <div class="section-title">
@@ -56,6 +54,19 @@
     <button>Save visual config</button>
   </form>
 
+  <div class="stack">
+  <section class="panel">
+    <div class="section-title">
+      <h2>Connection Tests</h2>
+      <p>Check the local commands and configured services.</p>
+    </div>
+    <div class="actions">
+      <form method="post" action="/settings/test/jira"><button>Test Jira</button></form>
+      <form method="post" action="/settings/test/git"><button class="secondary">Test Git</button></form>
+      <form method="post" action="/settings/test/claude"><button class="secondary">Test Claude</button></form>
+    </div>
+  </section>
+
   <section class="panel">
     <div class="section-title">
       <h2>Raw YAML</h2>
@@ -66,5 +77,6 @@
       <button>Save YAML</button>
     </form>
   </section>
+  </div>
 </section>
 {% endblock %}

@@ -8,6 +8,11 @@
   {% else %}
   <form method="post" action="/queue/start-interval"><button class="secondary">Start interval</button></form>
   {% endif %}
+  {% if queue_paused %}
+  <form method="post" action="/queue/resume"><button>Resume queue</button></form>
+  {% else %}
+  <form method="post" action="/queue/pause"><button class="secondary">Pause queue</button></form>
+  {% endif %}
 </section>
 
 <div id="status" hx-get="/partials/status" hx-trigger="every 2s" hx-swap="outerHTML">
@@ -53,6 +58,55 @@
 
 <section class="grid">
   <div class="panel">
+    <h2>Jira Scan Preview</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Ticket</th>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Eligibility</th>
+            <th>Queue</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for ticket in scan_preview %}
+          <tr>
+            <td><strong>{{ ticket.key }}</strong></td>
+            <td>{{ ticket.summary }}</td>
+            <td>{{ ticket.status }}</td>
+            <td><span class="pill {% if ticket.eligibility == 'skipped' %}warn{% endif %}">{{ ticket.eligibility }}</span></td>
+            <td>{{ ticket.queue_state or "-" }}</td>
+            <td>{{ ticket.skip_reason or "-" }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="empty">Scan Jira to preview tickets.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Notifications</h2>
+    <div class="list">
+      {% for note in notifications %}
+      <article>
+        <strong>{{ note.title }}</strong>
+        <span>{{ note.message }}</span>
+        <small>{{ note.level }} - {{ note.created_at }}</small>
+      </article>
+      {% else %}
+      <p class="empty">No notifications yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="grid">
+  <div class="panel">
     <h2>Finished Runs</h2>
     <div class="list">
     {% for run in done %}
@@ -92,6 +146,4 @@
     </div>
   </div>
 </section>
-
-<script src="/static/app.js"></script>
 {% endblock %}

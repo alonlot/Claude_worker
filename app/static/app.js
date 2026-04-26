@@ -23,3 +23,24 @@ if (list) {
   list.addEventListener("drop", syncOrder);
   syncOrder();
 }
+
+async function pollNotifications() {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "default") {
+    try { await Notification.requestPermission(); } catch { return; }
+  }
+  if (Notification.permission !== "granted") return;
+  try {
+    const response = await fetch("/notifications/unread");
+    if (!response.ok) return;
+    const notifications = await response.json();
+    for (const item of notifications) {
+      new Notification(item.title, { body: item.message || item.level });
+    }
+  } catch {
+    // Notification polling should never disturb the page.
+  }
+}
+
+setInterval(pollNotifications, 10000);
+pollNotifications();
