@@ -1,123 +1,397 @@
-Jira Claude Worker - Python Worker Integration Contract
-=======================================================
+Jira Claude Worker - Full Worker Integration Contract
+=====================================================
 
-Purpose
--------
-The website is the main product. The Python automation code may be replaced by your own worker.
-To connect your real worker to the website, keep the same database states and route behavior below.
+Audience
+--------
+This document is written for a local LLM or engineer that needs to replace the placeholder worker
+with a real Jira/Git/Claude automation worker while keeping the existing FastAPI website working.
 
+The website is the main UI. The worker is the backend automation engine behind the UI.
 
-1. Core idea
-------------
-The web app controls and displays these things:
+The local LLM should treat this file as the source of truth for:
 
-- Jira ticket discovery
-- Queue ordering
-- Run/cancel commands
-- Live logs
-- Progress percentage
-- Finished run history
-- Review/CR-fix action
-- Manual push action
-- Config editing
-
-Your worker can implement the real Jira, Git, and Claude behavior however you want, as long as it
-updates the SQLite database using the fields below.
+- what data the website expects,
+- what methods the real worker must expose,
+- what database rows must be written,
+- what states mean,
+- how progress and logs are shown,
+- what Git and Claude are allowed to do,
+- and how the website buttons map to worker behavior.
 
 
-2. Database ownership
----------------------
-The website reads and writes this SQLite database:
+0. Current Project Shape
+------------------------
+Important files:
 
-    data/worker.sqlite3
+    app/web.py
+        FastAPI routes and UI action handlers.
 
-The path is configurable in:
+    app/db.py
+        SQLite schema and helper methods.
+
+    app/runner.py
+        Placeholder worker implementation.
+
+    app/templates/
+        HTMX/Jinja UI templates.
+
+    app/static/
+        UI JavaScript and CSS.
+
+    config.yaml
+        Local runtime config. This file is intentionally not committed.
+
+    config.example.yaml
+        Example config committed to Git.
+
+The real worker may replace app/runner.py or be wrapped by app/runner.py, but it should not require
+template changes unless the UI itself is intentionally changed.
+
+
+1. High-Level Responsibility Split
+----------------------------------
+The website is responsible for:
+
+- Displaying current run status.
+- Displaying ticket number, ticket name, and short ticket description for active runs.
+- Displaying live logs.
+- Displaying queue, skipped tickets, manually runnable tickets, and completed runs.
+- Letting the user scan Jira, run once, start interval mode, stop interval mode, reorder queue,
+  enqueue a ticket, rerun a ticket, cancel current run, run CR fix, push branch, and edit config.
+- Editing config visually and as raw YAML.
+
+The worker is responsible for:
+
+- Scanning Jira.
+- Deciding ticket eligibility.
+- Creating/updating ticket rows.
+- Creating queue rows for eligible tickets.
+- Running the next queued ticket.
+- Creating/updating run rows.
+- Writing logs.
+- Updating progress.
+- Calling Claude.
+- Performing all Git operations.
+- Canceling an active run.
+- Running CR fix.
+- Pushing finished branches.
+
+Claude is responsible for:
+
+- Understanding the ticket.
+- Proposing repo/base branch/branch summary when asked.
+- Implementing code changes.
+- Reviewing code changes.
+- Optionally fixing review findings.
+
+Claude is NOT responsible for:
+
+- cloning,
+- fetching,
+- checking out,
+- creating branches,
+- committing,
+- rebasing,
+- merging,
+- pushing,
+- resetting,
+- or any other Git command.
+
+Python worker owns all Git interactions.
+
+
+2. Config Contract
+------------------
+Config path:
+
+    config.yaml
+
+Example path:
+
+    config.example.yaml
+
+The website reads/writes config.yaml. The visual form currently edits known fields and preserves
+unknown/custom YAML keys.
+
+Expected sections:
+
+    app
+    jira
+    git
+    claude
+    ui
+
+Known fields:
+
+    app.host
+    app.port
+    app.database_path
+    app.workspace_dir
+    app.interval_seconds
+    app.clone_retention_limit
+
+    jira.url
+    jira.email
+    jira.token
+    jira.jql
+    jira.excluded_statuses
+    jira.required_text
+    jira.max_results
+
+    git.username
+    git.token
+    git.remote_name
+
+    claude.command
+    claude.args
+    claude.model
+    claude.api_key
+    claude.timeout_seconds
+    claude.allow_cr_fix
+    claude.auto_cr_fix
+
+    ui.title
+
+The real worker may add fields, for example:
+
+    worker.module
+    worker.class
+    notifications.enabled
+    jira.required_labels
+    claude.max_subagents
+    git.commit_strategy
+
+Requirement:
+
+- Preserve unknown/custom YAML fields when saving known fields.
+- Do not log secret values.
+- Treat tokens/keys as secrets:
+  - jira.token
+  - git.token
+  - claude.api_key
+  - any extra key containing token, secret, password, or api_key
+
+
+3. Database Contract
+--------------------
+Database path:
 
     config.yaml -> app.database_path
 
-Your worker should either:
+Default:
 
-- import and use app.db.Database, or
-- write compatible rows to the same tables.
+    data/worker.sqlite3
 
-The current placeholder worker already creates the database schema with:
+The schema is created by:
 
     python -m app init-db
 
-
-3. Ticket rows your worker should export
-----------------------------------------
-Table:
+Tables:
 
     tickets
-
-Required fields:
-
-    key             Jira key, for example ABC-123
-    summary         Jira summary/title
-    status          Jira status text
-    url             Jira browser URL
-    description     Ticket body/comments text used by Claude
-    labels          Comma-separated labels
-    eligibility     discovered | eligible | skipped
-    skip_reason     Human-readable reason if skipped
-
-When Jira scan finishes, the worker should upsert ticket rows.
-
-Default behavior:
-
-- If assigned to me and not Review/Done: eligibility = eligible
-- If Review/Done: eligibility = skipped, skip_reason = status is <status>
-- If missing required text configured in config.yaml: eligibility = skipped
-- If user manually chooses a skipped/non-eligible ticket, the website inserts a queue item anyway.
-
-
-4. Queue behavior your worker should follow
--------------------------------------------
-Table:
-
     queue_items
-
-Important fields:
-
-    ticket_key      Jira key
-    priority        Lower number runs first
-    state           queued | running | done | failed | cancelled
-
-The website can reorder queued items by changing priority.
-
-Your worker should:
-
-- Pick the queued item with the lowest priority.
-- Mark it running while active.
-- Mark it done, failed, or cancelled when finished.
-- Never run more than one queue item at once unless you intentionally add parallel execution support.
-
-
-5. Run lifecycle your worker should export
-------------------------------------------
-Table:
-
     runs
+    logs
 
-Important fields:
+The website reads these tables directly. Therefore the real worker must keep them compatible.
+
+
+4. Table: tickets
+-----------------
+Purpose:
+
+    Stores Jira ticket metadata and eligibility information.
+
+Schema:
+
+    key TEXT PRIMARY KEY
+    summary TEXT NOT NULL
+    status TEXT NOT NULL
+    url TEXT NOT NULL DEFAULT ''
+    description TEXT NOT NULL DEFAULT ''
+    labels TEXT NOT NULL DEFAULT ''
+    eligibility TEXT NOT NULL DEFAULT 'discovered'
+    skip_reason TEXT NOT NULL DEFAULT ''
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+Field meaning:
+
+    key
+        Jira issue key. Example: ABC-123.
+
+    summary
+        Jira issue title. This is displayed as the ticket name.
+
+    status
+        Jira workflow status text. Example: To Do, In Progress, Review, Done.
+
+    url
+        Browser URL for the Jira ticket.
+
+    description
+        Plain text ticket body plus useful comment text. The active run panel shows the first
+        part of this field as the small description.
+
+    labels
+        Comma-separated labels. Example: backend,urgent,claude.
+
+    eligibility
+        One of:
+            discovered
+            eligible
+            skipped
+
+    skip_reason
+        Human-readable reason why the ticket was not auto-queued. Empty string when eligible.
+
+Required behavior during Jira scan:
+
+1. Fetch assigned Jira tickets according to config.
+2. Convert Jira rich text to plain text.
+3. Upsert each ticket row.
+4. Set eligibility and skip_reason.
+5. Auto-enqueue eligible tickets.
+
+Default eligibility rules:
+
+    eligible:
+        Ticket is assigned to the configured/current Jira user and status is not excluded.
+
+    skipped:
+        Ticket status is in jira.excluded_statuses.
+        skip_reason example: status is Done
+
+    skipped:
+        jira.required_text is non-empty and the text is missing from title/description/labels.
+        skip_reason example: missing required text "for claude"
+
+    discovered:
+        Use only if the worker has seen the ticket but has not classified it yet.
+
+Important UI behavior:
+
+- Manual Ticket Selection shows non-eligible tickets from this table.
+- User can manually enqueue skipped/non-eligible tickets.
+- Active run displays ticket key, summary, status, and description.
+
+
+5. Table: queue_items
+---------------------
+Purpose:
+
+    Stores ticket execution queue and priority order.
+
+Schema:
+
+    id INTEGER PRIMARY KEY AUTOINCREMENT
+    ticket_key TEXT NOT NULL
+    priority INTEGER NOT NULL DEFAULT 0
+    state TEXT NOT NULL DEFAULT 'queued'
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+Field meaning:
 
     ticket_key
+        Jira issue key. Must match tickets.key.
+
+    priority
+        Lower number runs first. The website drag reorder updates this field.
+
     state
+        queued
+        running
+        done
+        failed
+        cancelled
+
+Queue selection rule:
+
+    SELECT the queued item with lowest priority, then lowest id.
+
+Required worker behavior:
+
+- Do not create duplicate active queue rows for the same ticket_key where state is queued/running.
+- When a run starts, set queue_items.state = running.
+- When a run completes successfully, set queue_items.state = done.
+- When a run fails, set queue_items.state = failed.
+- When a run is cancelled, set queue_items.state = cancelled.
+- Do not change queue priority while executing unless explicitly implementing a new feature.
+
+Website routes that touch queue_items:
+
+    POST /queue/reorder
+        Updates priority.
+
+    POST /tickets/{ticket_key}/enqueue
+        Inserts a queued item.
+
+    POST /tickets/{ticket_key}/rerun
+        Inserts a new queued item if none is already queued/running.
+
+
+6. Table: runs
+--------------
+Purpose:
+
+    Stores each automation attempt/run.
+
+Schema:
+
+    id INTEGER PRIMARY KEY AUTOINCREMENT
+    ticket_key TEXT NOT NULL
+    state TEXT NOT NULL DEFAULT 'queued'
+    progress INTEGER NOT NULL DEFAULT 0
+    repo_url TEXT NOT NULL DEFAULT ''
+    base_branch TEXT NOT NULL DEFAULT ''
+    branch_name TEXT NOT NULL DEFAULT ''
+    workspace_path TEXT NOT NULL DEFAULT ''
+    review_output TEXT NOT NULL DEFAULT ''
+    error TEXT NOT NULL DEFAULT ''
+    pushed_at TEXT
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    finished_at TEXT
+
+Field meaning:
+
+    ticket_key
+        Jira issue key.
+
+    state
+        Current run state. The UI uses this heavily.
+
     progress
+        Integer from 0 to 100. The UI displays this as the progress bar.
+
     repo_url
+        Git clone URL selected for the ticket.
+
     base_branch
+        Base branch selected for ticket work. Example: main, develop.
+
     branch_name
+        Final feature branch name created by Python.
+
     workspace_path
+        Local path where this ticket was cloned.
+
     review_output
+        Review agent output. Used for CR-fix context and visible in history.
+
     error
+        Failure/cancel reason if any.
+
     pushed_at
+        Timestamp when branch was pushed.
+
     finished_at
+        Timestamp when run reached done, failed, or cancelled.
 
 Supported run states:
 
-    discovered
-    skipped
     queued
     preparing_git
     running_claude
@@ -128,28 +402,102 @@ Supported run states:
     cancelled
     pushed
 
+Legacy/planned states accepted by contract but not currently displayed as active:
+
+    discovered
+    skipped
+
+Active run states shown in Current Run panel:
+
+    preparing_git
+    running_claude
+    reviewing
+
+Finished Runs panel states:
+
+    done
+    needs_cr_fix
+    pushed
+    failed
+    cancelled
+
+Recommended state transition for normal run:
+
+    queued
+      -> preparing_git
+      -> running_claude
+      -> reviewing
+      -> needs_cr_fix OR done
+
+If review is only informational:
+
+    reviewing -> done
+
+If review finds issues and user should decide:
+
+    reviewing -> needs_cr_fix
+
+If user clicks Do CR Fix:
+
+    needs_cr_fix
+      -> running_claude
+      -> reviewing
+      -> done
+
+If user clicks Push:
+
+    done OR needs_cr_fix
+      -> pushed
+
+If run fails:
+
+    any active state -> failed
+
+If user cancels:
+
+    any active state -> cancelled
+
 Recommended progress ranges:
 
-    0-10      Created / selected from queue
-    10-25     Repo discovery, clone, checkout, branch creation
+    0-5       Run row created
+    5-15      Claude discovery of repo/base/branch summary
+    15-25     Git clone/fetch/checkout/branch creation
     25-80     Main Claude implementation
-    80-95     Claude review
-    95-100    Done / CR fix / push ready
+    80-95     Review agent
+    95-100    CR fix/finalization/push-ready
 
-The website displays progress directly from runs.progress.
+Important:
+
+- progress must be clamped between 0 and 100.
+- progress should only move backward if a new phase intentionally restarts work.
+- set finished_at when state becomes done, failed, or cancelled.
+- set pushed_at when state becomes pushed.
 
 
-6. Log streaming
-----------------
-Table:
+7. Table: logs
+--------------
+Purpose:
 
-    logs
+    Stores live terminal/event output for runs.
 
-Important fields:
+Schema:
+
+    id INTEGER PRIMARY KEY AUTOINCREMENT
+    run_id INTEGER NOT NULL
+    phase TEXT NOT NULL
+    line TEXT NOT NULL
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+Field meaning:
 
     run_id
+        runs.id.
+
     phase
+        Short label for source/stage.
+
     line
+        One log line. Should not include trailing newline.
 
 Recommended phases:
 
@@ -160,135 +508,620 @@ Recommended phases:
     review
     cr-fix
     push
+    system
     error
 
-Every meaningful terminal line from your worker should be inserted into logs.
-The dashboard polls these logs and shows them in the Current Run terminal.
+Live output behavior:
 
-Do not write secrets into logs. Mask Jira tokens, Git tokens, Claude keys, and anything similar.
+- Insert logs while the work is running, not only after the process exits.
+- The dashboard polls every 2 seconds.
+- Current Run panel shows latest logs from this table.
+- GET /runs/{run_id}/logs returns all logs as plain text.
+
+Secret rule:
+
+- Never insert raw secrets into logs.
+- Mask known tokens before inserting logs.
+- Suggested mask value: ***
+
+Progress from logs:
+
+- If Claude prints lines like:
+
+      PROGRESS 40%
+
+  the worker may parse that and update runs.progress to 40.
+
+- This is optional but recommended.
 
 
-7. Website commands your worker must support
---------------------------------------------
-The website already has buttons/routes for these operations:
+8. Required Worker Interface
+----------------------------
+The current app.web.create_app creates:
+
+    worker = Worker(config, db)
+
+Therefore the real Worker class should provide these methods:
+
+    async def scan_jira(self) -> int:
+        Scan Jira.
+        Upsert tickets.
+        Auto-enqueue eligible tickets.
+        Return number of scanned tickets.
+
+    async def scan_and_run_once(self) -> None:
+        Usually: await scan_jira(); await run_next()
+
+    async def run_interval_forever(self) -> None:
+        Loop forever:
+            scan_and_run_once()
+            sleep config.app.interval_seconds
+
+    def start_interval(self) -> bool:
+        Start a background interval task.
+        Return False if already running.
+
+    def stop_interval(self) -> None:
+        Stop the interval task.
+
+    async def run_next(self) -> int | None:
+        Run the next queued ticket.
+        Return run_id, or None if no queue item exists or another run is active.
+
+    def cancel_current(self) -> None:
+        Cancel the active Claude/process run if one exists.
+
+    async def run_cr_fix(self, run_id: int) -> None:
+        Run Claude to fix review findings for the given run.
+
+    def push_run(self, run_id: int) -> str:
+        Push the branch for the run.
+        Return command output or a short success string.
+
+    def rerun_ticket(self, ticket_key: str) -> None:
+        Enqueue the ticket again.
+
+If your real worker uses a different internal shape, create an adapter class with the exact methods above.
+
+
+9. Website Route Behavior
+-------------------------
+Routes and expected worker/database effects:
+
+    GET /
+        Render dashboard.
+        Reads tickets, queue_items, runs, and logs.
 
     POST /jira/scan
-        Scan Jira and write ticket rows. Eligible tickets may be auto-queued.
+        Calls await worker.scan_jira().
+        Expected DB effect:
+            tickets table updated.
+            eligible tickets may be added to queue_items.
 
     POST /queue/run-once
-        Run the next queued ticket once.
+        Starts worker.run_next() in a background task.
+        Expected DB effect:
+            next queued item becomes running.
+            run row is created.
+            logs/progress update over time.
 
     POST /queue/start-interval
-        Start repeated scan/run behavior.
+        Calls worker.start_interval().
 
     POST /queue/stop-interval
-        Stop repeated scan/run behavior.
+        Calls worker.stop_interval().
 
     POST /queue/reorder
-        Reorder queued tickets.
+        Website directly updates queue_items.priority.
 
     POST /tickets/{ticket_key}/enqueue
-        Add a specific ticket to the queue manually.
+        Website directly enqueues ticket_key.
 
     POST /tickets/{ticket_key}/rerun
-        Queue a ticket again.
+        Calls worker.rerun_ticket(ticket_key).
 
     POST /runs/{run_id}/cancel
-        Cancel the current active run.
+        Calls worker.cancel_current().
+        Website currently sets runs.state = cancelled and runs.error = "cancel requested".
+        Better real-worker behavior:
+            set state = cancelling first if you add that state,
+            stop process,
+            then set cancelled/failed based on result.
 
     POST /runs/{run_id}/review-fix
-        Run Claude to fix review findings.
+        Starts worker.run_cr_fix(run_id) in a background task.
 
     POST /runs/{run_id}/push
-        Push the prepared branch to Git.
+        Calls worker.push_run(run_id).
 
     GET /runs/{run_id}/logs
-        Return plain text logs.
+        Website reads logs table and returns plain text.
+
+    GET /settings
+        Render visual config + raw YAML config.
+
+    POST /settings
+        Save raw YAML.
+
+    POST /settings/visual
+        Save known config fields from visual form and preserve unknown fields.
 
 
-8. Git responsibilities
------------------------
-Python worker owns all Git interactions:
+10. Jira Scan Detailed Behavior
+-------------------------------
+scan_jira() should:
 
-- clone
-- fetch
-- checkout
-- branch creation
-- status checks
-- push
+1. Read Jira config:
 
-Claude should not run Git commands.
+       jira.url
+       jira.email
+       jira.token
+       jira.jql
+       jira.max_results
+       jira.excluded_statuses
+       jira.required_text
 
-The expected branch format is:
+2. Query Jira.
 
-    <ticket-number>/by_claude_<summary-created-by-claude>
+3. Normalize each issue:
+
+       key
+       summary
+       status
+       url
+       description
+       labels
+
+4. Classify eligibility.
+
+5. Upsert tickets.
+
+6. Enqueue eligible tickets that do not already have queue_items.state in queued/running.
+
+7. Log scan-level errors in a reasonable place:
+
+       either raise exception for UI flash,
+       or create system logs if tied to a run.
+
+No run row is required for a plain Jira scan.
+
+
+11. Git Detailed Behavior
+-------------------------
+Python worker must do all Git operations using safe subprocess calls.
+
+Use argument arrays, not shell strings:
+
+    subprocess.run(["git", "clone", clone_url, target_path], ...)
+
+Do not do:
+
+    subprocess.run("git clone " + url + " " + path, shell=True)
+
+Required Git phases:
+
+1. Determine repo_url and base_branch.
+   This may come from:
+       Claude discovery,
+       Jira fields,
+       config mapping,
+       or your own code.
+
+2. Create one clone per ticket/run.
+   Default workspace root:
+
+       config.app.workspace_dir
+
+   Example:
+
+       workspaces/ABC-123
+
+3. Fetch base branch.
+
+4. Checkout base branch.
+
+5. Create feature branch.
+
+Branch name format:
+
+    <ticket-key>/by_claude_<slug-summary>
 
 Example:
 
     ABC-123/by_claude_fix_login_timeout
 
-The worker should write the final branch name to:
+Slug rules:
 
-    runs.branch_name
+- lowercase
+- only a-z, 0-9, underscore
+- replace spaces/punctuation with underscore
+- collapse repeated underscores
+- keep reasonably short, around 48 chars for slug part
 
+6. Write Git metadata into runs:
 
-9. Claude responsibilities
---------------------------
-The worker should be able to call Claude for:
+       repo_url
+       base_branch
+       branch_name
+       workspace_path
 
-- repo/base-branch/summary discovery from Jira ticket text
-- implementation
-- review
-- optional CR fix
+7. Push only when user clicks Push.
 
-The website does not need to know how Claude is called. It only needs:
+push_run(run_id) should:
 
-- logs inserted into logs
-- progress updates in runs.progress
-- final state updates in runs.state
-- review text in runs.review_output
+- find run row,
+- verify workspace_path and branch_name exist,
+- run git push,
+- set state = pushed,
+- set pushed_at timestamp,
+- add a push log line.
 
-
-10. Config fields the website edits
------------------------------------
-The website edits config.yaml as raw YAML.
-
-Important expected sections:
-
-    app
-    jira
-    git
-    claude
-    ui
-
-Your worker may add more fields. The website will preserve them when the user edits YAML manually.
+Do not auto-push unless the user explicitly adds such a feature.
 
 
-11. Minimal worker replacement checklist
-----------------------------------------
-If you replace the placeholder worker, make sure these still work from the website:
+12. Claude Detailed Behavior
+----------------------------
+The worker may use Claude CLI or another Claude integration.
 
-- Scan Jira fills tickets table.
-- Eligible tickets appear in queue.
-- Manual add creates queue item.
-- Drag reorder changes priority.
-- Run once creates a run row.
-- Current run shows state, progress, and logs.
-- Cancel changes state to cancelled and stops the process.
-- Done runs appear in Finished Runs.
-- Rerun creates another queue item.
-- Do CR Fix updates logs/review_output/state.
-- Push changes state to pushed and fills pushed_at.
+Current config supports:
+
+    claude.command
+    claude.args
+    claude.model
+    claude.api_key
+    claude.timeout_seconds
+    claude.allow_cr_fix
+    claude.auto_cr_fix
+
+Discovery prompt should return:
+
+    repo_url
+    base_branch
+    summary
+
+Recommended JSON:
+
+    {
+      "repo_url": "git@gitlab.com:group/project.git",
+      "base_branch": "main",
+      "summary": "fix login timeout"
+    }
+
+Implementation prompt must include:
+
+- Jira key.
+- Ticket title.
+- Ticket description.
+- Current branch.
+- Rule: do not run Git commands.
+- Rule: Python owns all Git interactions.
+- Request progress lines like PROGRESS 40%.
+- Permission to spawn subagents if the ticket naturally splits into independent components.
+
+Review prompt must:
+
+- Ask for bugs, regressions, missing tests, incomplete requirements.
+- Put findings first.
+- Say clearly if there are no findings.
+- Forbid Git commands.
+
+CR fix prompt must:
+
+- Include review_output.
+- Ask Claude to fix the review findings.
+- Forbid Git commands.
+
+Claude output should be streamed line-by-line into logs.
 
 
-12. Development recommendation
+13. Cancellation Behavior
+-------------------------
+Minimum behavior:
+
+- cancel_current() terminates active Claude/process if any.
+- run state becomes cancelled.
+- queue item state becomes cancelled.
+- error field contains a short reason.
+- finished_at is set.
+
+Better behavior:
+
+- Track process object or PID.
+- On cancel:
+    1. request graceful termination,
+    2. wait a short timeout,
+    3. force kill if needed,
+    4. log what happened.
+
+The current DB does not have a "cancelling" state, but you may add it if you update the UI accordingly.
+
+
+14. Interval Mode
+-----------------
+start_interval() should:
+
+- start a background task,
+- not start a duplicate task if already running,
+- return False if already running.
+
+run_interval_forever() should:
+
+- call scan_and_run_once(),
+- sleep config.app.interval_seconds,
+- repeat forever until cancelled/stopped.
+
+stop_interval() should:
+
+- cancel or stop the background task.
+
+Recommended behavior:
+
+- If one ticket is already running, interval mode should not start another simultaneous run.
+- The worker should use a lock around run_next().
+
+
+15. UI Expectations
+-------------------
+Current Run panel:
+
+- Shows a run only if runs.state is:
+
+      preparing_git
+      running_claude
+      reviewing
+
+- Displays:
+
+      runs.id
+      runs.ticket_key
+      runs.state
+      tickets.key
+      tickets.status
+      tickets.summary
+      first 360 chars of tickets.description
+      runs.progress
+      runs.branch_name
+      latest logs
+
+Therefore, if the active ticket panel looks empty, check:
+
+- Does runs.ticket_key match tickets.key?
+- Is run state one of active states?
+- Is tickets.description populated?
+- Are logs being inserted with the correct run_id?
+
+Finished Runs panel:
+
+- Shows runs where state is:
+
+      done
+      needs_cr_fix
+      pushed
+      failed
+      cancelled
+
+Manual Ticket Selection:
+
+- Shows tickets where eligibility != eligible.
+
+Skipped Tickets:
+
+- Shows tickets where eligibility = skipped.
+
+
+16. Error Handling Rules
+------------------------
+When a run fails:
+
+1. Insert an error log:
+
+       phase = error
+       line = concise failure message
+
+2. Update runs:
+
+       state = failed
+       error = concise failure message
+       finished_at = current timestamp
+
+3. Update queue_items:
+
+       state = failed
+
+4. Do not delete the workspace automatically on failure.
+   The user may need to inspect it.
+
+When Jira scan fails:
+
+- It is acceptable to raise the exception so the website flash shows "Jira scan failed: ...".
+- Do not crash the whole web server.
+
+When push fails:
+
+- Do not set pushed_at.
+- Do not set state = pushed.
+- Add a push/error log if possible.
+- Return/raise an error so the website flash can show it.
+
+
+17. Security Rules
+------------------
+Never log secrets.
+
+Never print these raw values:
+
+- Jira token.
+- Git token.
+- Claude API key.
+- Any authorization header.
+- Any full HTTPS URL with embedded credentials.
+
+Masking example:
+
+    https://user:token@gitlab.com/group/repo.git
+
+Should be logged as:
+
+    https://***@gitlab.com/group/repo.git
+
+or:
+
+    gitlab.com/group/repo.git
+
+Do not expose config.yaml in logs.
+
+The website currently displays config values in the Settings page because this is a local-only app.
+If remote access is added later, add authentication first.
+
+
+18. Local LLM Implementation Steps
+----------------------------------
+If a local LLM is implementing the real worker, follow this order:
+
+1. Read app/db.py and this contract.
+2. Keep app/templates unchanged at first.
+3. Create or replace Worker with the exact interface in section 8.
+4. Implement scan_jira().
+5. Implement run_next() with fake/simulated Claude first.
+6. Verify UI updates:
+       queue changes,
+       active run appears,
+       logs stream,
+       progress moves,
+       finished run appears.
+7. Implement real Git clone/checkout/branch creation.
+8. Implement real Claude discovery.
+9. Implement real Claude implementation run.
+10. Implement real review run.
+11. Implement cancel.
+12. Implement push.
+13. Run tests.
+14. Add new tests for any changed behavior.
+
+
+19. Minimal Happy Path Example
 ------------------------------
-Keep your real automation code behind a small adapter with methods like:
+Assume Jira returns:
 
-    scan_jira()
-    run_next()
-    cancel_current()
-    run_cr_fix(run_id)
-    push_run(run_id)
+    key = ABC-123
+    summary = Fix login timeout
+    status = To Do
+    description = Users get logged out too early...
 
-Then wire that adapter into app.web.create_app instead of changing the templates or UI routes.
+scan_jira() writes:
+
+    tickets:
+      key = ABC-123
+      summary = Fix login timeout
+      status = To Do
+      eligibility = eligible
+      skip_reason = ''
+
+scan_jira() enqueues:
+
+    queue_items:
+      ticket_key = ABC-123
+      priority = next number
+      state = queued
+
+run_next() selects queue item and creates:
+
+    runs:
+      ticket_key = ABC-123
+      state = preparing_git
+      progress = 5
+
+Discovery sets:
+
+    repo_url = git@gitlab.com:company/app.git
+    base_branch = main
+    branch_name = ABC-123/by_claude_fix_login_timeout
+    progress = 15
+
+Git phase sets:
+
+    workspace_path = workspaces/ABC-123
+    progress = 25
+
+Claude implementation:
+
+    state = running_claude
+    progress moves 25 -> 80
+    logs inserted continuously
+
+Review:
+
+    state = reviewing
+    progress = 85
+    review_output is stored
+
+Finish:
+
+    state = done
+    progress = 100
+    finished_at = timestamp
+    queue_items.state = done
+
+User clicks Push:
+
+    git push is run by Python
+    runs.state = pushed
+    runs.pushed_at = timestamp
+
+
+20. Common Mistakes To Avoid
+----------------------------
+Do not:
+
+- Change table names without updating the website.
+- Use a run state the UI does not know about unless you update the UI.
+- Forget to create a tickets row before creating a run.
+- Write logs only at the end; the UI needs mid-run logs.
+- Let Claude run Git commands.
+- Push automatically.
+- Store labels as JSON unless you also update UI/DB expectations.
+- Put multiline raw JSON blobs in logs unless they are useful to the user.
+- Let a scan create duplicate queued/running items for the same ticket.
+- Mark a run done before review_output is saved if review is enabled.
+- Delete failed workspaces automatically.
+- Log tokens or credentialed Git URLs.
+
+
+21. Acceptance Checklist
+------------------------
+The real worker is integrated correctly when all of these are true:
+
+- Settings page still loads.
+- Scan Jira fills the tickets table.
+- Eligible tickets appear in Queue.
+- Skipped tickets show skip reasons.
+- Manual add works for skipped/non-eligible tickets.
+- Queue reorder changes priority.
+- Run once starts exactly one ticket.
+- Current Run shows ticket key, name, status, short description, progress, branch, and logs.
+- Logs appear during execution, not only after execution.
+- Progress changes during execution.
+- Cancel stops active work and marks cancelled.
+- Finished runs appear in history.
+- Rerun works.
+- Review output is saved.
+- Do CR Fix works when enabled.
+- Push button pushes branch and marks pushed.
+- Failed runs show a clear error.
+- No secrets appear in logs.
+- Tests pass.
+
+
+22. Compatibility Promise
+-------------------------
+If the worker follows this contract, the existing website can remain mostly unchanged.
+
+If you need to change the database schema, also update:
+
+- app/db.py
+- app/web.py queries
+- templates that read affected fields
+- this contract
+- tests
+
+Keep changes additive when possible.
