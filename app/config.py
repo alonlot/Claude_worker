@@ -92,14 +92,28 @@ def load_config(path: Path | str = CONFIG_PATH) -> Config:
     )
 
 
+def load_config_data(path: Path | str = CONFIG_PATH) -> dict[str, Any]:
+    path = Path(path)
+    if not path.exists():
+        load_config(path)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("config.yaml must contain a YAML mapping")
+    return raw
+
+
+def write_config_data(data: dict[str, Any], path: Path | str = CONFIG_PATH) -> Config:
+    path = Path(path)
+    normalized = yaml.dump(data, Dumper=IndentedSafeDumper, sort_keys=False, default_flow_style=False)
+    path.write_text(normalized, encoding="utf-8", newline="\n")
+    return load_config(path)
+
+
 def save_config_text(text: str, path: Path | str = CONFIG_PATH) -> Config:
     parsed = yaml.safe_load(text) or {}
     if not isinstance(parsed, dict):
         raise ValueError("config.yaml must contain a YAML mapping")
-    path = Path(path)
-    normalized = yaml.dump(parsed, Dumper=IndentedSafeDumper, sort_keys=False, default_flow_style=False)
-    path.write_text(normalized, encoding="utf-8", newline="\n")
-    return load_config(path)
+    return write_config_data(parsed, path)
 
 
 def load_config_text(path: Path | str = CONFIG_PATH) -> str:

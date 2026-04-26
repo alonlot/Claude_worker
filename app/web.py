@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.config import Config, load_config, load_config_text, save_config_text
+from app.config import Config, load_config_data, load_config_text, save_config_text, write_config_data
 from app.db import Database
 from app.runner import Worker
 
@@ -26,7 +26,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
-        return templates.TemplateResponse("index.html", context(request, db, config))
+        return templates.TemplateResponse("index.html", context(request, db, request.app.state.config))
 
     @app.post("/jira/scan")
     async def jira_scan(request: Request):
@@ -99,19 +99,107 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     @app.get("/partials/status", response_class=HTMLResponse)
     async def status_partial(request: Request):
-        return templates.TemplateResponse("_status.html", context(request, db, config))
+        return templates.TemplateResponse("_status.html", context(request, db, request.app.state.config))
 
     @app.get("/settings", response_class=HTMLResponse)
     async def settings(request: Request):
+        active_config = request.app.state.config
         return templates.TemplateResponse(
             "settings.html",
-            {"request": request, "config_text": load_config_text(), "title": config.ui.title},
+            {
+                "request": request,
+                "config": active_config,
+                "config_text": load_config_text(),
+                "title": active_config.ui.title,
+                "flash": pop_flash(request),
+                "claude_args_text": "\n".join(active_config.claude.args),
+                "excluded_statuses_text": "\n".join(active_config.jira.excluded_statuses),
+            },
         )
 
     @app.post("/settings")
     async def save_settings(request: Request, config_text: str = Form(...)):
         try:
             new_config = save_config_text(config_text)
+            request.app.state.config = new_config
+            worker.config = new_config
+            worker.git.config = new_config
+            request.app.state.flash = "Config saved."
+        except Exception as exc:
+            request.app.state.flash = f"Config save failed: {exc}"
+        return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/visual")
+    async def save_visual_settings(
+        request: Request,
+        app_host: str = Form(...),
+        app_port: int = Form(...),
+        database_path: str = Form(...),
+        workspace_dir: str = Form(...),
+        interval_seconds: int = Form(...),
+        clone_retention_limit: int = Form(...),
+        jira_url: str = Form(...),
+        jira_email: str = Form(...),
+        jira_token: str = Form(...),
+        jira_jql: str = Form(...),
+        excluded_statuses: str = Form(""),
+        required_text: str = Form(""),
+        max_results: int = Form(...),
+        git_username: str = Form(""),
+        git_token: str = Form(""),
+        git_remote_name: str = Form(...),
+        claude_command: str = Form(...),
+        claude_args: str = Form(""),
+        claude_model: str = Form(""),
+        claude_api_key: str = Form(""),
+        claude_timeout_seconds: int = Form(...),
+        allow_cr_fix: str | None = Form(None),
+        auto_cr_fix: str | None = Form(None),
+        ui_title: str = Form(...),
+    ):
+        try:
+            data = load_config_data()
+            data.setdefault("app", {}).update(
+                {
+                    "host": app_host,
+                    "port": app_port,
+                    "database_path": database_path,
+                    "workspace_dir": workspace_dir,
+                    "interval_seconds": interval_seconds,
+                    "clone_retention_limit": clone_retention_limit,
+                }
+            )
+            data.setdefault("jira", {}).update(
+                {
+                    "url": jira_url,
+                    "email": jira_email,
+                    "token": jira_token,
+                    "jql": jira_jql,
+                    "excluded_statuses": split_lines(excluded_statuses),
+                    "required_text": required_text,
+                    "max_results": max_results,
+                }
+            )
+            data.setdefault("git", {}).update(
+                {
+                    "username": git_username,
+                    "token": git_token,
+                    "remote_name": git_remote_name,
+                }
+            )
+            data.setdefault("claude", {}).update(
+                {
+                    "command": claude_command,
+                    "args": split_lines(claude_args),
+                    "model": claude_model,
+                    "api_key": claude_api_key,
+                    "timeout_seconds": claude_timeout_seconds,
+                    "allow_cr_fix": allow_cr_fix == "on",
+                    "auto_cr_fix": auto_cr_fix == "on",
+                }
+            )
+            data.setdefault("ui", {}).update({"title": ui_title})
+            new_config = write_config_data(data)
             request.app.state.config = new_config
             worker.config = new_config
             worker.git.config = new_config
@@ -131,8 +219,7 @@ def context(request: Request, db: Database, config: Config) -> dict:
         current_ticket = db.fetchone("SELECT * FROM tickets WHERE key=?", (current["ticket_key"],))
         current_logs = db.fetchall("SELECT * FROM logs WHERE run_id=? ORDER BY id DESC LIMIT 120", (current["id"],))
         current_logs = list(reversed(current_logs))
-    flash = getattr(request.app.state, "flash", "")
-    request.app.state.flash = ""
+    flash = pop_flash(request)
     return {
         "request": request,
         "title": config.ui.title,
@@ -154,3 +241,13 @@ def context(request: Request, db: Database, config: Config) -> dict:
         "allow_cr_fix": config.claude.allow_cr_fix,
         "interval_running": bool(request.app.state.worker.interval_task and not request.app.state.worker.interval_task.done()),
     }
+
+
+def pop_flash(request: Request) -> str:
+    flash = getattr(request.app.state, "flash", "")
+    request.app.state.flash = ""
+    return flash
+
+
+def split_lines(value: str) -> list[str]:
+    return [line.strip() for line in value.replace(",", "\n").splitlines() if line.strip()]

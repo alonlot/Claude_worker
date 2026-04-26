@@ -148,7 +148,72 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
   padding: 12px 14px;
   margin-bottom: 16px;
 }
-textarea {
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(420px, 0.85fr);
+  gap: 18px;
+  align-items: start;
+}
+.section-title {
+  margin-bottom: 14px;
+}
+.section-title p {
+  margin: -6px 0 0;
+}
+.settings-form {
+  display: grid;
+  gap: 16px;
+}
+fieldset {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px;
+}
+legend {
+  color: var(--ink);
+  font-weight: 800;
+  padding: 0 6px;
+}
+label {
+  display: grid;
+  gap: 6px;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 700;
+}
+label.wide {
+  grid-column: 1 / -1;
+}
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+}
+input,
+textarea.compact {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--ink);
+  background: white;
+  font: inherit;
+}
+textarea.compact {
+  min-height: 84px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+textarea:not(.compact) {
   width: 100%;
   min-height: 70vh;
   resize: vertical;
@@ -161,6 +226,6 @@ textarea {
 
 @media (max-width: 880px) {
   .topbar, .hero-head { flex-direction: column; align-items: stretch; }
-  .grid { grid-template-columns: 1fr; }
+  .grid, .settings-layout, fieldset { grid-template-columns: 1fr; }
   .queue li { grid-template-columns: 1fr; }
 }

@@ -1,10 +1,70 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="panel">
-  <h2>Config</h2>
-  <form method="post" action="/settings">
-    <textarea name="config_text" spellcheck="false">{{ config_text }}</textarea>
-    <button>Save config</button>
+{% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+
+<section class="settings-layout">
+  <form method="post" action="/settings/visual" class="panel settings-form">
+    <div class="section-title">
+      <h2>Visual Config</h2>
+      <p>Edit the main settings without touching YAML.</p>
+    </div>
+
+    <fieldset>
+      <legend>App</legend>
+      <label>Host <input name="app_host" value="{{ config.app.host }}"></label>
+      <label>Port <input name="app_port" type="number" min="1" max="65535" value="{{ config.app.port }}"></label>
+      <label>Database path <input name="database_path" value="{{ config.app.database_path }}"></label>
+      <label>Workspace dir <input name="workspace_dir" value="{{ config.app.workspace_dir }}"></label>
+      <label>Interval seconds <input name="interval_seconds" type="number" min="5" value="{{ config.app.interval_seconds }}"></label>
+      <label>Clone retention limit <input name="clone_retention_limit" type="number" min="0" value="{{ config.app.clone_retention_limit }}"></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Jira</legend>
+      <label>URL <input name="jira_url" value="{{ config.jira.url }}"></label>
+      <label>Email <input name="jira_email" value="{{ config.jira.email }}"></label>
+      <label>Token <input name="jira_token" type="password" value="{{ config.jira.token }}"></label>
+      <label class="wide">JQL <textarea class="compact" name="jira_jql">{{ config.jira.jql }}</textarea></label>
+      <label>Excluded statuses <textarea class="compact" name="excluded_statuses">{{ excluded_statuses_text }}</textarea></label>
+      <label>Required text <input name="required_text" value="{{ config.jira.required_text }}"></label>
+      <label>Max results <input name="max_results" type="number" min="1" value="{{ config.jira.max_results }}"></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Git</legend>
+      <label>Username <input name="git_username" value="{{ config.git.username }}"></label>
+      <label>Token <input name="git_token" type="password" value="{{ config.git.token }}"></label>
+      <label>Remote name <input name="git_remote_name" value="{{ config.git.remote_name }}"></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Claude</legend>
+      <label>Command <input name="claude_command" value="{{ config.claude.command }}"></label>
+      <label>Model <input name="claude_model" value="{{ config.claude.model }}"></label>
+      <label>API key <input name="claude_api_key" type="password" value="{{ config.claude.api_key }}"></label>
+      <label>Timeout seconds <input name="claude_timeout_seconds" type="number" min="30" value="{{ config.claude.timeout_seconds }}"></label>
+      <label class="wide">Args <textarea class="compact" name="claude_args">{{ claude_args_text }}</textarea></label>
+      <label class="check"><input name="allow_cr_fix" type="checkbox" {% if config.claude.allow_cr_fix %}checked{% endif %}> Allow CR fix</label>
+      <label class="check"><input name="auto_cr_fix" type="checkbox" {% if config.claude.auto_cr_fix %}checked{% endif %}> Auto CR fix</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>UI</legend>
+      <label>Title <input name="ui_title" value="{{ config.ui.title }}"></label>
+    </fieldset>
+
+    <button>Save visual config</button>
   </form>
+
+  <section class="panel">
+    <div class="section-title">
+      <h2>Raw YAML</h2>
+      <p>Advanced editor for custom or future settings.</p>
+    </div>
+    <form method="post" action="/settings">
+      <textarea name="config_text" spellcheck="false">{{ config_text }}</textarea>
+      <button>Save YAML</button>
+    </form>
+  </section>
 </section>
 {% endblock %}
