@@ -194,6 +194,32 @@ Example:
 
 Use this for code-server, a local web IDE, or any local file viewer that can open the run workspace.
 
+Quick setup steps for code-server (Windows):
+
+1) Install code-server globally:
+
+    npm install -g code-server
+
+2) Start code-server with this repository:
+
+    code-server "C:\Users\alonl\OneDrive\Desktop\claude_worker"
+
+3) Open the printed URL in your browser (usually http://127.0.0.1:8080) and sign in with the printed password.
+
+4) In Settings -> Raw YAML, set:
+
+    ui:
+      title: Jira Claude Worker
+      ide_url_template: "http://127.0.0.1:8080/?folder={workspace_path}"
+
+5) Save YAML and open any run page. The IDE panel should render inside Run Studio.
+
+Troubleshooting:
+
+- If the iframe is blank, verify code-server is running on the same URL/port as ide_url_template.
+- If the folder does not open, verify workspace_path points to an existing local path.
+- If embedding is blocked by browser policy, open the IDE URL directly in a new tab.
+
 
 3. Database Contract
 --------------------

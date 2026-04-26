@@ -10,7 +10,7 @@
       <div class="row">
         <a class="button-link secondary" href="/">Dashboard</a>
         {% if run.state in ["preparing_git", "running_claude", "reviewing"] %}
-        <form method="post" action="/runs/{{ run.id }}/cancel"><button class="danger">Cancel</button></form>
+        <form method="post" action="/runs/{{ run.id }}/cancel"><button class="danger" data-loading-text="Cancelling...">Cancel</button></form>
         {% endif %}
       </div>
     </div>
@@ -48,10 +48,10 @@
     {% endif %}
     <div class="row detail-actions">
       {% if run.state in ["done", "needs_cr_fix", "pushed"] %}
-      <form method="post" action="/runs/{{ run.id }}/push"><button>Push branch</button></form>
+      <form method="post" action="/runs/{{ run.id }}/push"><button data-loading-text="Pushing...">Push branch</button></form>
       {% endif %}
       {% if run.review_output %}
-      <form method="post" action="/runs/{{ run.id }}/review-fix"><button class="secondary">Do CR Fix</button></form>
+      <form method="post" action="/runs/{{ run.id }}/review-fix"><button class="secondary" data-loading-text="Starting CR fix...">Do CR Fix</button></form>
       {% endif %}
       <form method="post" action="/tickets/{{ run.ticket_key }}/rerun"><button class="secondary">Rerun ticket</button></form>
     </div>
@@ -59,85 +59,24 @@
 
 </section>
 
-<section class="grid">
-  <div class="panel">
-    <h2>Agent Questions</h2>
-    <div class="question-list">
-      {% for question in questions %}
-      <article class="question-card {% if question.state == 'pending' %}question-pending{% endif %}">
-        <div class="question-card-head">
-          <div>
-            <span class="eyebrow">{{ question.agent_name }} asks</span>
-            <h3>{{ question.question }}</h3>
-          </div>
-          <span class="pill {% if question.state == 'pending' %}warn{% endif %}">{{ question.state }}</span>
-        </div>
-        {% if question.state == "pending" %}
-        <form method="post" action="/agent-questions/{{ question.id }}/answer" class="question-form">
-          <input type="hidden" name="run_id" value="{{ run.id }}">
-          <div class="choice-grid">
-            <label class="choice-card">
-              <input type="radio" name="selected_answer" value="{{ question.option_a }}">
-              <span>A</span>
-              <strong>{{ question.option_a }}</strong>
-            </label>
-            <label class="choice-card">
-              <input type="radio" name="selected_answer" value="{{ question.option_b }}">
-              <span>B</span>
-              <strong>{{ question.option_b }}</strong>
-            </label>
-            <label class="choice-card">
-              <input type="radio" name="selected_answer" value="{{ question.option_c }}">
-              <span>C</span>
-              <strong>{{ question.option_c }}</strong>
-            </label>
-          </div>
-          {% if question.free_input_enabled %}
-          <label class="free-answer">Custom answer
-            <input name="free_answer" placeholder="Type a custom answer">
-          </label>
-          {% endif %}
-          <button>Submit answer</button>
-        </form>
-        {% else %}
-        <div class="answered-card">
-          <strong>{{ question.answer }}</strong>
-          <small>{{ question.answer_source }} - {{ question.answered_at }}</small>
-        </div>
-        {% endif %}
-      </article>
-      {% else %}
-      <p class="empty">No questions from agents yet.</p>
-      {% endfor %}
+<section class="panel execution-studio">
+  <div class="execution-head">
+    <div>
+      <h2>Run Studio</h2>
+      <p>IDE, guidance, and live logs in one place.</p>
     </div>
+    <span class="pill">{{ run.state }}</span>
   </div>
 
-  <div class="panel">
-    <h2>Sub Agents</h2>
-    <div class="list">
-      {% for agent in sub_agents %}
-      <article>
-        <div class="ticket-focus-head">
-          <strong>{{ agent.name }}</strong>
-          <span class="pill">{{ agent.status }} {{ agent.progress }}%</span>
-        </div>
-        <span>{{ agent.task }}</span>
-        {% if agent.summary %}<small>{{ agent.summary }}</small>{% endif %}
-      </article>
-      {% else %}
-      <p class="empty">No sub-agents reported yet.</p>
-      {% endfor %}
-    </div>
-  </div>
-</section>
-
-<section class="work-grid">
-  <div class="panel">
-    <h2>Workspace / IDE</h2>
-    <section class="workbench">
+  <section class="studio-grid">
+    <section class="workbench studio-ide">
       <div class="workbench-top">
         <div>
+          {% if ticket %}
+          <strong>{{ ticket.key }} - {{ ticket.summary }}</strong>
+          {% else %}
           <strong>{{ run.ticket_key }}</strong>
+          {% endif %}
           <span>{{ run.workspace_path or "Workspace not created yet" }}</span>
         </div>
         <span class="pill">{{ run.state }}</span>
@@ -147,6 +86,9 @@
         <span><strong>Base</strong>{{ run.base_branch or "-" }}</span>
       </div>
     {% if ide_url %}
+      <div class="ide-toolbar">
+        <a class="button-link tiny secondary" href="{{ ide_url }}" target="_blank" rel="noopener noreferrer">Open IDE in new tab</a>
+      </div>
       <iframe class="ide-embed" src="{{ ide_url }}"></iframe>
     {% else %}
       <div class="ide-frame">
@@ -163,33 +105,110 @@ a local file viewer, or another web IDE here.</pre>
       </div>
     {% endif %}
     </section>
-  </div>
 
-  <section class="panel">
-    <h2>Message During Run</h2>
-    <form method="post" action="/runs/{{ run.id }}/input" class="stack">
-      <label>Send guidance to the active agent
-        <textarea class="compact message-box" name="message" placeholder="Add guidance, answer context, or correction for the active agent."></textarea>
-      </label>
-      <button>Send to agent</button>
-    </form>
-    <div class="list compact-list">
-      {% for item in agent_inputs %}
-      <article>
-        <strong>User input #{{ item.id }}</strong>
-        <span>{{ item.message }}</span>
-        <small>{% if item.consumed %}consumed{% else %}waiting for worker{% endif %} - {{ item.created_at }}</small>
-      </article>
-      {% else %}
-      <p class="empty">No mid-run input yet.</p>
-      {% endfor %}
-    </div>
-  </section>
+    <section class="studio-side">
+      <section class="studio-message">
+        {% set ns = namespace(has_pending_question=false) %}
+        {% for question in questions %}
+          {% if question.state == "pending" %}
+            {% set ns.has_pending_question = true %}
+          {% endif %}
+        {% endfor %}
 
-  <div class="panel">
-    <h2>Live Logs</h2>
-    <pre class="terminal tall">{% for log in logs %}[{{ log.phase }}] {{ log.line }}
+        {% if ns.has_pending_question %}
+        <h3>Agent Questions</h3>
+        <div class="question-list">
+          {% for question in questions %}
+            {% if question.state == "pending" %}
+            <article class="question-card question-pending">
+              <div class="question-card-head">
+                <div>
+                  <span class="eyebrow">{{ question.agent_name }} asks</span>
+                  <h3>{{ question.question }}</h3>
+                </div>
+                <span class="pill warn">{{ question.state }}</span>
+              </div>
+              <form method="post" action="/agent-questions/{{ question.id }}/answer" class="question-form">
+                <input type="hidden" name="run_id" value="{{ run.id }}">
+                <div class="choice-grid">
+                  <label class="choice-card">
+                    <input type="radio" name="selected_answer" value="{{ question.option_a }}">
+                    <span>A</span>
+                    <strong>{{ question.option_a }}</strong>
+                  </label>
+                  <label class="choice-card">
+                    <input type="radio" name="selected_answer" value="{{ question.option_b }}">
+                    <span>B</span>
+                    <strong>{{ question.option_b }}</strong>
+                  </label>
+                  <label class="choice-card">
+                    <input type="radio" name="selected_answer" value="{{ question.option_c }}">
+                    <span>C</span>
+                    <strong>{{ question.option_c }}</strong>
+                  </label>
+                </div>
+                {% if question.free_input_enabled %}
+                <label class="free-answer">Custom answer
+                  <input name="free_answer" placeholder="Type a custom answer">
+                </label>
+                {% endif %}
+                <button>Submit answer</button>
+              </form>
+            </article>
+            {% endif %}
+          {% endfor %}
+        </div>
+        {% else %}
+        <h3>Message During Run</h3>
+        <form method="post" action="/runs/{{ run.id }}/input" class="stack">
+          <label>Send guidance to the active agent
+            <textarea class="compact message-box" name="message" placeholder="Add guidance, answer context, or correction for the active agent."></textarea>
+          </label>
+          <button>Send to agent</button>
+        </form>
+        <div class="list compact-list">
+          {% for item in agent_inputs %}
+          <article>
+            <strong>User input #{{ item.id }}</strong>
+            <span>{{ item.message }}</span>
+            <small>{% if item.consumed %}consumed{% else %}waiting for worker{% endif %} - {{ item.created_at }}</small>
+          </article>
+          {% else %}
+          <p class="empty">No mid-run input yet.</p>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </section>
+      <section class="studio-message">
+        <h3>Sub Agents</h3>
+        <div class="list compact-list">
+          {% for agent in sub_agents %}
+          <article>
+            <div class="ticket-focus-head">
+              <strong>{{ agent.name }}</strong>
+              <span class="pill">{{ agent.status }} {{ agent.progress }}%</span>
+            </div>
+            <span>{{ agent.task }}</span>
+            {% if agent.summary %}<small>{{ agent.summary }}</small>{% endif %}
+          </article>
+          {% else %}
+          <p class="empty">No sub-agents reported yet.</p>
+          {% endfor %}
+        </div>
+      </section>
+    </section>
+
+    <section class="studio-logs">
+      <div class="studio-logs-head">
+        <h3>Live Logs Terminal</h3>
+        <label class="terminal-follow-toggle">
+          <input type="checkbox" id="follow-logs-toggle" checked>
+          Follow logs
+        </label>
+      </div>
+      <pre class="terminal tall" id="live-logs-terminal" data-run-id="{{ run.id }}">{% for log in logs %}[{{ log.phase }}] {{ log.line }}
 {% endfor %}</pre>
-  </div>
+    </section>
+  </section>
 </section>
 {% endblock %}

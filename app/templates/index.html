@@ -2,7 +2,10 @@
 {% block content %}
 <section class="actions">
   <form method="post" action="/jira/scan"><button>Scan Jira</button></form>
-  <form method="post" action="/queue/run-once"><button>Run once</button></form>
+  <form method="post" action="/queue/run-once"><button data-loading-text="Starting run...">Run once</button></form>
+  {% if current %}
+  <a class="button-link secondary" href="/runs/{{ current.id }}">Open current ticket studio</a>
+  {% endif %}
   {% if interval_running %}
   <form method="post" action="/queue/stop-interval"><button class="secondary">Stop interval</button></form>
   {% else %}
@@ -58,40 +61,15 @@
 
 <section class="grid">
   <div class="panel">
-    <h2>Jira Scan Preview</h2>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Ticket</th>
-            <th>Name</th>
-            <th>Status</th>
-            <th>Eligibility</th>
-            <th>Queue</th>
-            <th>Reason</th>
-          </tr>
-        </thead>
-        <tbody>
-        {% for ticket in scan_preview %}
-          <tr>
-            <td><strong>{{ ticket.key }}</strong></td>
-            <td>{{ ticket.summary }}</td>
-            <td>{{ ticket.status }}</td>
-            <td><span class="pill {% if ticket.eligibility == 'skipped' %}warn{% endif %}">{{ ticket.eligibility }}</span></td>
-            <td>{{ ticket.queue_state or "-" }}</td>
-            <td>{{ ticket.skip_reason or "-" }}</td>
-          </tr>
-        {% else %}
-          <tr><td colspan="6" class="empty">Scan Jira to preview tickets.</td></tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="panel">
     <h2>Notifications</h2>
     <div class="list">
+      {% if current and current_questions %}
+      <article class="dashboard-question-alert">
+        <strong>Action needed: {{ current_questions|length }} agent question{% if current_questions|length != 1 %}s{% endif %}</strong>
+        <span>{{ current.ticket_key }} is waiting for your answer before the run can continue cleanly.</span>
+        <small><a class="text-link" href="/runs/{{ current.id }}">Open Run Studio</a></small>
+      </article>
+      {% endif %}
       {% for note in notifications %}
       <article>
         <strong>{{ note.title }}</strong>
@@ -118,10 +96,10 @@
           <a class="button-link tiny secondary" href="/runs/{{ run.id }}">Open</a>
           <form method="post" action="/tickets/{{ run.ticket_key }}/rerun"><button class="tiny secondary">Rerun</button></form>
           {% if run.state in ["done", "needs_cr_fix", "pushed"] %}
-          <form method="post" action="/runs/{{ run.id }}/push"><button class="tiny">Push</button></form>
+          <form method="post" action="/runs/{{ run.id }}/push"><button class="tiny" data-loading-text="Pushing...">Push</button></form>
           {% endif %}
           {% if allow_cr_fix and run.review_output %}
-          <form method="post" action="/runs/{{ run.id }}/review-fix"><button class="tiny secondary">Do CR Fix</button></form>
+          <form method="post" action="/runs/{{ run.id }}/review-fix"><button class="tiny secondary" data-loading-text="Starting CR fix...">Do CR Fix</button></form>
           {% endif %}
         </div>
       </article>

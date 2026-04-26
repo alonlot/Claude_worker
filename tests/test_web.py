@@ -1,8 +1,10 @@
+import asyncio
+
 from fastapi.testclient import TestClient
 
 from app.config import Config
 from app.db import Database
-from app.web import create_app, split_lines
+from app.web import create_app, spawn_tracked_task, split_lines
 
 
 def test_split_lines_accepts_lines_and_commas():
@@ -67,3 +69,62 @@ def test_queue_pause_and_notifications_routes(tmp_path):
     assert notes.status_code == 200
     assert notes.json()[0]["title"] == "Done"
     assert db.unread_notifications() == []
+
+
+def test_cancel_mismatch_does_not_cancel_requested_run(tmp_path):
+    config = Config()
+    config.app.database_path = str(tmp_path / "worker.sqlite3")
+    db = Database(config.app.database_path)
+    db.init()
+    db.upsert_ticket(
+        {
+            "key": "A-1",
+            "summary": "Build UI",
+            "status": "In Progress",
+            "description": "Ticket body",
+            "eligibility": "eligible",
+        }
+    )
+    run_one = db.create_run("A-1")
+    run_two = db.create_run("A-1")
+    db.update_run(run_one, state="done")
+    db.update_run(run_two, state="running_claude", progress=42)
+
+    app = create_app(config, db)
+    client = TestClient(app)
+
+    response = client.post(f"/runs/{run_one}/cancel", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/runs/{run_two}"
+    assert db.fetchone("SELECT state FROM runs WHERE id=?", (run_one,))["state"] == "done"
+    assert db.fetchone("SELECT state FROM runs WHERE id=?", (run_two,))["state"] == "running_claude"
+
+
+def test_spawn_tracked_task_creates_error_notification(tmp_path):
+    config = Config()
+    config.app.database_path = str(tmp_path / "worker.sqlite3")
+    db = Database(config.app.database_path)
+    db.init()
+
+    async def explode():
+        raise RuntimeError("boom")
+
+    async def run_and_drain():
+        task = spawn_tracked_task(
+            explode(),
+            db,
+            title="Run loop failed",
+            message="Background run-once task crashed.",
+        )
+        try:
+            await task
+        except RuntimeError:
+            pass
+        await asyncio.sleep(0)
+
+    asyncio.run(run_and_drain())
+    note = db.fetchone("SELECT title, message, level FROM notifications ORDER BY id DESC LIMIT 1")
+    assert note is not None
+    assert note["title"] == "Run loop failed"
+    assert note["level"] == "error"
+    assert "boom" in note["message"]

@@ -44,3 +44,92 @@ async function pollNotifications() {
 
 setInterval(pollNotifications, 10000);
 pollNotifications();
+
+function bindBusyButtons(root = document) {
+  const forms = root.querySelectorAll("form");
+  for (const form of forms) {
+    if (form.dataset.busyBound === "1") continue;
+    form.dataset.busyBound = "1";
+    form.addEventListener("submit", () => {
+      const submitter = form.querySelector('button[type="submit"], button:not([type])');
+      if (!submitter) return;
+      const loadingText = submitter.dataset.loadingText;
+      if (!loadingText) return;
+      submitter.dataset.originalText = submitter.textContent;
+      submitter.textContent = loadingText;
+      submitter.disabled = true;
+      form.dataset.submitting = "1";
+    });
+  }
+}
+
+function initFollowLogs(root = document) {
+  const terminal = root.querySelector("#live-logs-terminal");
+  const toggle = root.querySelector("#follow-logs-toggle");
+  if (!terminal || !toggle || toggle.dataset.followBound === "1") return;
+  toggle.dataset.followBound = "1";
+
+  let userScrolledUp = false;
+  const nearBottom = () => terminal.scrollTop + terminal.clientHeight >= terminal.scrollHeight - 24;
+  const scrollToBottom = () => {
+    terminal.scrollTop = terminal.scrollHeight;
+  };
+
+  const updateFromScroll = () => {
+    userScrolledUp = !nearBottom();
+    if (userScrolledUp && toggle.checked) {
+      toggle.checked = false;
+    }
+  };
+
+  terminal.addEventListener("scroll", updateFromScroll);
+  toggle.addEventListener("change", () => {
+    if (toggle.checked) {
+      userScrolledUp = false;
+      scrollToBottom();
+    }
+  });
+
+  const observer = new MutationObserver(() => {
+    if (toggle.checked && !userScrolledUp) {
+      scrollToBottom();
+    }
+  });
+  observer.observe(terminal, { childList: true, characterData: true, subtree: true });
+  scrollToBottom();
+}
+
+function initLiveLogsPolling(root = document) {
+  const terminal = root.querySelector("#live-logs-terminal");
+  if (!terminal || terminal.dataset.pollBound === "1") return;
+  const runId = terminal.dataset.runId;
+  if (!runId) return;
+  terminal.dataset.pollBound = "1";
+
+  const refresh = async () => {
+    try {
+      const response = await fetch(`/runs/${runId}/logs`, { cache: "no-store" });
+      if (!response.ok) return;
+      const content = await response.text();
+      if (terminal.textContent !== content) {
+        terminal.textContent = content;
+      }
+    } catch {
+      // Ignore transient polling failures.
+    }
+  };
+
+  refresh();
+  const intervalId = window.setInterval(refresh, 2000);
+  window.addEventListener("beforeunload", () => window.clearInterval(intervalId), { once: true });
+}
+
+bindBusyButtons(document);
+initFollowLogs(document);
+initLiveLogsPolling(document);
+document.addEventListener("htmx:afterSwap", (event) => {
+  const root = event.target instanceof Element ? event.target : document;
+  bindBusyButtons(root);
+  initFollowLogs(document);
+  initLiveLogsPolling(document);
+});

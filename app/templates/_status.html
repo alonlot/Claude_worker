@@ -10,7 +10,7 @@
       {% endif %}
     </div>
     {% if current %}
-    <form method="post" action="/runs/{{ current.id }}/cancel"><button class="danger">Cancel</button></form>
+    <form method="post" action="/runs/{{ current.id }}/cancel"><button class="danger" data-loading-text="Cancelling...">Cancel</button></form>
     {% endif %}
   </div>
   {% if current %}

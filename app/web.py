@@ -5,6 +5,8 @@ import shlex
 import subprocess
 from urllib.parse import quote
 
+from collections.abc import Awaitable
+
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -44,7 +46,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
         if db.queue_paused():
             request.app.state.flash = "Queue is paused. Resume it before running tickets."
         else:
-            asyncio.create_task(worker.run_next())
+            spawn_tracked_task(
+                worker.run_next(),
+                db,
+                title="Run loop failed",
+                message="Background run-once task crashed. Check logs for details.",
+            )
             request.app.state.flash = "Run started."
         return RedirectResponse("/", status_code=303)
 
@@ -89,14 +96,33 @@ def create_app(config: Config, db: Database) -> FastAPI:
         return RedirectResponse("/", status_code=303)
 
     @app.post("/runs/{run_id}/cancel")
-    async def cancel_run(run_id: int):
+    async def cancel_run(run_id: int, request: Request):
+        active_run = db.fetchone(
+            "SELECT id FROM runs WHERE state IN ('preparing_git','running_claude','reviewing') ORDER BY id DESC LIMIT 1"
+        )
+        if not active_run:
+            request.app.state.flash = "No active run to cancel."
+            return RedirectResponse("/", status_code=303)
+
+        active_run_id = int(active_run["id"])
+        if active_run_id != run_id:
+            request.app.state.flash = f"Cancel ignored: run #{run_id} is not active. Active run is #{active_run_id}."
+            return RedirectResponse(f"/runs/{active_run_id}", status_code=303)
+
         worker.cancel_current()
-        db.update_run(run_id, state="cancelled", error="cancel requested")
-        return RedirectResponse("/", status_code=303)
+        db.update_run(active_run_id, state="cancelled", error="cancel requested")
+        request.app.state.flash = f"Cancel requested for run #{active_run_id}."
+        return RedirectResponse(f"/runs/{active_run_id}", status_code=303)
 
     @app.post("/runs/{run_id}/review-fix")
     async def review_fix(run_id: int, request: Request):
-        asyncio.create_task(worker.run_cr_fix(run_id))
+        spawn_tracked_task(
+            worker.run_cr_fix(run_id),
+            db,
+            title="CR fix failed",
+            message=f"Background CR fix crashed for run #{run_id}.",
+            run_id=run_id,
+        )
         request.app.state.flash = "CR fix started."
         return RedirectResponse("/", status_code=303)
 
@@ -322,19 +348,6 @@ def context(request: Request, db: Database, config: Config) -> dict:
             ORDER BY q.priority ASC, q.id ASC
             """
         ),
-        "scan_preview": db.fetchall(
-            """
-            SELECT t.*,
-                CASE
-                    WHEN q.id IS NOT NULL THEN q.state
-                    ELSE ''
-                END AS queue_state
-            FROM tickets t
-            LEFT JOIN queue_items q ON q.ticket_key=t.key AND q.state IN ('queued', 'running')
-            ORDER BY t.updated_at DESC
-            LIMIT 100
-            """
-        ),
         "skipped": db.fetchall("SELECT * FROM tickets WHERE eligibility='skipped' ORDER BY updated_at DESC LIMIT 50"),
         "manual": db.fetchall("SELECT * FROM tickets WHERE eligibility!='eligible' ORDER BY updated_at DESC LIMIT 50"),
         "done": db.fetchall(
@@ -442,3 +455,27 @@ async def run_command(args: list[str], timeout: int) -> str:
         return output
 
     return await asyncio.to_thread(_run)
+
+
+def spawn_tracked_task(
+    coro: Awaitable[object],
+    db: Database,
+    *,
+    title: str,
+    message: str,
+    run_id: int | None = None,
+) -> asyncio.Task[object]:
+    task = asyncio.create_task(coro)
+
+    def _on_done(done_task: asyncio.Task[object]) -> None:
+        try:
+            done_task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            error_message = f"{message} Error: {exc}"
+            db.add_notification(title, error_message, "error", run_id)
+            print(error_message)
+
+    task.add_done_callback(_on_done)
+    return task
