@@ -1,0 +1,294 @@
+Jira Claude Worker - Python Worker Integration Contract
+=======================================================
+
+Purpose
+-------
+The website is the main product. The Python automation code may be replaced by your own worker.
+To connect your real worker to the website, keep the same database states and route behavior below.
+
+
+1. Core idea
+------------
+The web app controls and displays these things:
+
+- Jira ticket discovery
+- Queue ordering
+- Run/cancel commands
+- Live logs
+- Progress percentage
+- Finished run history
+- Review/CR-fix action
+- Manual push action
+- Config editing
+
+Your worker can implement the real Jira, Git, and Claude behavior however you want, as long as it
+updates the SQLite database using the fields below.
+
+
+2. Database ownership
+---------------------
+The website reads and writes this SQLite database:
+
+    data/worker.sqlite3
+
+The path is configurable in:
+
+    config.yaml -> app.database_path
+
+Your worker should either:
+
+- import and use app.db.Database, or
+- write compatible rows to the same tables.
+
+The current placeholder worker already creates the database schema with:
+
+    python -m app init-db
+
+
+3. Ticket rows your worker should export
+----------------------------------------
+Table:
+
+    tickets
+
+Required fields:
+
+    key             Jira key, for example ABC-123
+    summary         Jira summary/title
+    status          Jira status text
+    url             Jira browser URL
+    description     Ticket body/comments text used by Claude
+    labels          Comma-separated labels
+    eligibility     discovered | eligible | skipped
+    skip_reason     Human-readable reason if skipped
+
+When Jira scan finishes, the worker should upsert ticket rows.
+
+Default behavior:
+
+- If assigned to me and not Review/Done: eligibility = eligible
+- If Review/Done: eligibility = skipped, skip_reason = status is <status>
+- If missing required text configured in config.yaml: eligibility = skipped
+- If user manually chooses a skipped/non-eligible ticket, the website inserts a queue item anyway.
+
+
+4. Queue behavior your worker should follow
+-------------------------------------------
+Table:
+
+    queue_items
+
+Important fields:
+
+    ticket_key      Jira key
+    priority        Lower number runs first
+    state           queued | running | done | failed | cancelled
+
+The website can reorder queued items by changing priority.
+
+Your worker should:
+
+- Pick the queued item with the lowest priority.
+- Mark it running while active.
+- Mark it done, failed, or cancelled when finished.
+- Never run more than one queue item at once unless you intentionally add parallel execution support.
+
+
+5. Run lifecycle your worker should export
+------------------------------------------
+Table:
+
+    runs
+
+Important fields:
+
+    ticket_key
+    state
+    progress
+    repo_url
+    base_branch
+    branch_name
+    workspace_path
+    review_output
+    error
+    pushed_at
+    finished_at
+
+Supported run states:
+
+    discovered
+    skipped
+    queued
+    preparing_git
+    running_claude
+    reviewing
+    needs_cr_fix
+    done
+    failed
+    cancelled
+    pushed
+
+Recommended progress ranges:
+
+    0-10      Created / selected from queue
+    10-25     Repo discovery, clone, checkout, branch creation
+    25-80     Main Claude implementation
+    80-95     Claude review
+    95-100    Done / CR fix / push ready
+
+The website displays progress directly from runs.progress.
+
+
+6. Log streaming
+----------------
+Table:
+
+    logs
+
+Important fields:
+
+    run_id
+    phase
+    line
+
+Recommended phases:
+
+    jira
+    discover
+    git
+    claude
+    review
+    cr-fix
+    push
+    error
+
+Every meaningful terminal line from your worker should be inserted into logs.
+The dashboard polls these logs and shows them in the Current Run terminal.
+
+Do not write secrets into logs. Mask Jira tokens, Git tokens, Claude keys, and anything similar.
+
+
+7. Website commands your worker must support
+--------------------------------------------
+The website already has buttons/routes for these operations:
+
+    POST /jira/scan
+        Scan Jira and write ticket rows. Eligible tickets may be auto-queued.
+
+    POST /queue/run-once
+        Run the next queued ticket once.
+
+    POST /queue/start-interval
+        Start repeated scan/run behavior.
+
+    POST /queue/stop-interval
+        Stop repeated scan/run behavior.
+
+    POST /queue/reorder
+        Reorder queued tickets.
+
+    POST /tickets/{ticket_key}/enqueue
+        Add a specific ticket to the queue manually.
+
+    POST /tickets/{ticket_key}/rerun
+        Queue a ticket again.
+
+    POST /runs/{run_id}/cancel
+        Cancel the current active run.
+
+    POST /runs/{run_id}/review-fix
+        Run Claude to fix review findings.
+
+    POST /runs/{run_id}/push
+        Push the prepared branch to Git.
+
+    GET /runs/{run_id}/logs
+        Return plain text logs.
+
+
+8. Git responsibilities
+-----------------------
+Python worker owns all Git interactions:
+
+- clone
+- fetch
+- checkout
+- branch creation
+- status checks
+- push
+
+Claude should not run Git commands.
+
+The expected branch format is:
+
+    <ticket-number>/by_claude_<summary-created-by-claude>
+
+Example:
+
+    ABC-123/by_claude_fix_login_timeout
+
+The worker should write the final branch name to:
+
+    runs.branch_name
+
+
+9. Claude responsibilities
+--------------------------
+The worker should be able to call Claude for:
+
+- repo/base-branch/summary discovery from Jira ticket text
+- implementation
+- review
+- optional CR fix
+
+The website does not need to know how Claude is called. It only needs:
+
+- logs inserted into logs
+- progress updates in runs.progress
+- final state updates in runs.state
+- review text in runs.review_output
+
+
+10. Config fields the website edits
+-----------------------------------
+The website edits config.yaml as raw YAML.
+
+Important expected sections:
+
+    app
+    jira
+    git
+    claude
+    ui
+
+Your worker may add more fields. The website will preserve them when the user edits YAML manually.
+
+
+11. Minimal worker replacement checklist
+----------------------------------------
+If you replace the placeholder worker, make sure these still work from the website:
+
+- Scan Jira fills tickets table.
+- Eligible tickets appear in queue.
+- Manual add creates queue item.
+- Drag reorder changes priority.
+- Run once creates a run row.
+- Current run shows state, progress, and logs.
+- Cancel changes state to cancelled and stops the process.
+- Done runs appear in Finished Runs.
+- Rerun creates another queue item.
+- Do CR Fix updates logs/review_output/state.
+- Push changes state to pushed and fills pushed_at.
+
+
+12. Development recommendation
+------------------------------
+Keep your real automation code behind a small adapter with methods like:
+
+    scan_jira()
+    run_next()
+    cancel_current()
+    run_cr_fix(run_id)
+    push_run(run_id)
+
+Then wire that adapter into app.web.create_app instead of changing the templates or UI routes.

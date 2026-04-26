@@ -1,0 +1,26 @@
+<section class="panel hero" id="status">
+  <div class="hero-head">
+    <div>
+      <h2>Current Run</h2>
+      {% if current %}
+        <p><strong>#{{ current.id }} {{ current.ticket_key }}</strong> - {{ current.state }}</p>
+      {% else %}
+        <p>No ticket is currently running.</p>
+      {% endif %}
+    </div>
+    {% if current %}
+    <form method="post" action="/runs/{{ current.id }}/cancel"><button class="danger">Cancel</button></form>
+    {% endif %}
+  </div>
+  {% if current %}
+  <div class="progress"><span style="width: {{ current.progress }}%"></span></div>
+  <div class="meta">
+    <span>{{ current.progress }}%</span>
+    <span>{{ current.branch_name }}</span>
+  </div>
+  <pre class="terminal">{% for log in current_logs %}[{{ log.phase }}] {{ log.line }}
+{% endfor %}</pre>
+  {% else %}
+  <div class="progress"><span style="width: 0%"></span></div>
+  {% endif %}
+</section>

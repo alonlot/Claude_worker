@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="actions">
+  <form method="post" action="/jira/scan"><button>Scan Jira</button></form>
+  <form method="post" action="/queue/run-once"><button>Run once</button></form>
+  {% if interval_running %}
+  <form method="post" action="/queue/stop-interval"><button class="secondary">Stop interval</button></form>
+  {% else %}
+  <form method="post" action="/queue/start-interval"><button class="secondary">Start interval</button></form>
+  {% endif %}
+</section>
+
+<div id="status" hx-get="/partials/status" hx-trigger="every 2s" hx-swap="outerHTML">
+  {% include "_status.html" %}
+</div>
+
+<section class="grid">
+  <div class="panel">
+    <h2>Queue</h2>
+    <form method="post" action="/queue/reorder">
+      <ol class="queue" id="queue-list">
+      {% for item in queue %}
+        <li draggable="true" data-id="{{ item.id }}">
+          <span class="ticket">{{ item.ticket_key }}</span>
+          <span>{{ item.summary }}</span>
+          <span class="pill">{{ item.state }}</span>
+        </li>
+      {% else %}
+        <li class="empty">No queued tickets.</li>
+      {% endfor %}
+      </ol>
+      <input type="hidden" name="order" id="queue-order">
+      <button class="secondary" type="submit">Save order</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Manual Ticket Selection</h2>
+    <div class="list">
+    {% for ticket in manual %}
+      <article>
+        <strong>{{ ticket.key }}</strong>
+        <span>{{ ticket.summary }}</span>
+        <small>{{ ticket.status }}{% if ticket.skip_reason %} - {{ ticket.skip_reason }}{% endif %}</small>
+        <form method="post" action="/tickets/{{ ticket.key }}/enqueue"><button class="tiny">Add</button></form>
+      </article>
+    {% else %}
+      <p class="empty">Scan Jira to see assigned tickets.</p>
+    {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <h2>Finished Runs</h2>
+    <div class="list">
+    {% for run in done %}
+      <article>
+        <strong>#{{ run.id }} {{ run.ticket_key }}</strong>
+        <span>{{ run.branch_name or "No branch" }}</span>
+        <small>{{ run.state }} - {{ run.updated_at }}</small>
+        <div class="row">
+          <form method="post" action="/tickets/{{ run.ticket_key }}/rerun"><button class="tiny secondary">Rerun</button></form>
+          {% if run.state in ["done", "needs_cr_fix", "pushed"] %}
+          <form method="post" action="/runs/{{ run.id }}/push"><button class="tiny">Push</button></form>
+          {% endif %}
+          {% if allow_cr_fix and run.review_output %}
+          <form method="post" action="/runs/{{ run.id }}/review-fix"><button class="tiny secondary">Do CR Fix</button></form>
+          {% endif %}
+        </div>
+      </article>
+    {% else %}
+      <p class="empty">No completed runs yet.</p>
+    {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Skipped Tickets</h2>
+    <div class="list">
+    {% for ticket in skipped %}
+      <article>
+        <strong>{{ ticket.key }}</strong>
+        <span>{{ ticket.summary }}</span>
+        <small><span class="pill warn">{{ ticket.skip_reason }}</span></small>
+      </article>
+    {% else %}
+      <p class="empty">No skipped tickets.</p>
+    {% endfor %}
+    </div>
+  </div>
+</section>
+
+<script src="/static/app.js"></script>
+{% endblock %}

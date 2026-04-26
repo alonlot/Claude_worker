@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Config</h2>
+  <form method="post" action="/settings">
+    <textarea name="config_text" spellcheck="false">{{ config_text }}</textarea>
+    <button>Save config</button>
+  </form>
+</section>
+{% endblock %}

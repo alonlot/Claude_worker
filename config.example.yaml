@@ -1,0 +1,35 @@
+app:
+  host: 127.0.0.1
+  port: 8000
+  database_path: data/worker.sqlite3
+  workspace_dir: workspaces
+  interval_seconds: 300
+  clone_retention_limit: 8
+
+jira:
+  url: https://your-domain.atlassian.net
+  email: you@example.com
+  token: paste-jira-token-here
+  jql: assignee = currentUser() ORDER BY updated DESC
+  excluded_statuses:
+    - Review
+    - Done
+  required_text: ""
+  max_results: 25
+
+git:
+  username: ""
+  token: ""
+  remote_name: origin
+
+claude:
+  command: claude
+  args: []
+  model: ""
+  api_key: ""
+  timeout_seconds: 7200
+  allow_cr_fix: true
+  auto_cr_fix: false
+
+ui:
+  title: Jira Claude Worker

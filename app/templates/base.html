@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>{{ title }}</h1>
+      <p>Local Jira automation with Python-owned Git and Claude CLI execution.</p>
+    </div>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/settings">Settings</a>
+    </nav>
+  </header>
+  <main class="shell">
+    {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
