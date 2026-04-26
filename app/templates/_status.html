@@ -13,6 +13,18 @@
     {% endif %}
   </div>
   {% if current %}
+  <article class="ticket-focus">
+    <div class="ticket-focus-head">
+      <span class="ticket">{{ current.ticket_key }}</span>
+      <span class="pill">{{ current_ticket.status if current_ticket else current.state }}</span>
+    </div>
+    <h3>{{ current_ticket.summary if current_ticket else "Ticket details unavailable" }}</h3>
+    {% if current_ticket and current_ticket.description %}
+      <p>{{ current_ticket.description[:360] }}{% if current_ticket.description|length > 360 %}...{% endif %}</p>
+    {% else %}
+      <p>No ticket description was saved for this run.</p>
+    {% endif %}
+  </article>
   <div class="progress"><span style="width: {{ current.progress }}%"></span></div>
   <div class="meta">
     <span>{{ current.progress }}%</span>

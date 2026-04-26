@@ -52,6 +52,28 @@ body {
 }
 .hero { margin-bottom: 18px; }
 .hero-head { display: flex; justify-content: space-between; gap: 18px; align-items: start; }
+.ticket-focus {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfe;
+  padding: 14px;
+  margin: 12px 0;
+}
+.ticket-focus-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+.ticket-focus h3 {
+  margin: 8px 0 6px;
+  font-size: 20px;
+}
+.ticket-focus p {
+  margin: 0;
+  max-width: 96ch;
+  line-height: 1.5;
+}
 h2 { margin: 0 0 14px; font-size: 18px; }
 p { color: var(--muted); }
 

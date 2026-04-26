@@ -125,8 +125,10 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
 def context(request: Request, db: Database, config: Config) -> dict:
     current = db.fetchone("SELECT * FROM runs WHERE state IN ('preparing_git','running_claude','reviewing') ORDER BY id DESC LIMIT 1")
+    current_ticket = None
     current_logs = []
     if current:
+        current_ticket = db.fetchone("SELECT * FROM tickets WHERE key=?", (current["ticket_key"],))
         current_logs = db.fetchall("SELECT * FROM logs WHERE run_id=? ORDER BY id DESC LIMIT 120", (current["id"],))
         current_logs = list(reversed(current_logs))
     flash = getattr(request.app.state, "flash", "")
@@ -136,6 +138,7 @@ def context(request: Request, db: Database, config: Config) -> dict:
         "title": config.ui.title,
         "flash": flash,
         "current": current,
+        "current_ticket": current_ticket,
         "current_logs": current_logs,
         "queue": db.fetchall(
             """
