@@ -1230,8 +1230,29 @@ Focused Run page:
       workspace/IDE focus panel
       full logs
 
-- The workspace/IDE panel currently displays workspace_path and branch_name.
-  If you add a real browser IDE/file viewer later, embed or link it here.
+- Current layout:
+
+      top section:
+        ticket/run summary, progress, repo/base/branch/workspace facts, review output, and actions.
+
+      middle section:
+        Agent Questions on the left.
+        Sub Agents on the right.
+
+      bottom workbench section:
+        Workspace / IDE on the left.
+        Message During Run in the middle.
+        Live Logs on the right.
+
+- Message During Run must stay visually near Workspace / IDE and Live Logs.
+  It should not be moved back into the top ticket summary area.
+
+- Workspace / IDE currently shows a dark workbench panel with ticket key, state, workspace path,
+  branch, and base branch. If ui.ide_url_template is configured, the page embeds that URL as an
+  iframe inside the workbench panel.
+
+- Live Logs should remain visible beside the workbench/message tools on desktop, and stack below
+  them on narrow screens.
 
 Finished Runs panel:
 
@@ -1471,7 +1492,8 @@ The real worker is integrated correctly when all of these are true:
 - Run once starts exactly one ticket.
 - Current Run shows ticket key, name, status, short description, progress, branch, and logs.
 - Focus ticket opens /runs/{run_id}.
-- Focused run page shows questions, mid-run input, sub-agents, workspace, and logs.
+- Focused run page shows questions, sub-agents, and a bottom workbench row with Workspace / IDE,
+  Message During Run, and Live Logs side by side on desktop.
 - Agent can create a question with exactly 3 options and optional free input.
 - User can answer an agent question from the focused run page.
 - User can send extra input mid-run from the focused run page.
