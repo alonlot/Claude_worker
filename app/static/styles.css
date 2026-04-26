@@ -43,6 +43,13 @@ body {
 .actions, .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .actions { margin-bottom: 18px; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 18px; }
+.work-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.95fr) minmax(300px, 0.7fr) minmax(360px, 1fr);
+  gap: 18px;
+  margin-top: 18px;
+  align-items: start;
+}
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -505,6 +512,9 @@ textarea.compact {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 13px;
 }
+.message-box {
+  min-height: 150px !important;
+}
 input[type="checkbox"] {
   width: 18px;
   height: 18px;
@@ -522,6 +532,6 @@ textarea:not(.compact) {
 
 @media (max-width: 880px) {
   .topbar, .hero-head { flex-direction: column; align-items: stretch; }
-  .grid, .settings-layout, .run-focus, .run-facts, .choice-grid, .workbench-meta, fieldset { grid-template-columns: 1fr; }
+  .grid, .work-grid, .settings-layout, .run-focus, .run-facts, .choice-grid, .workbench-meta, fieldset { grid-template-columns: 1fr; }
   .queue li { grid-template-columns: 1fr; }
 }

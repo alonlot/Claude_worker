@@ -57,26 +57,6 @@
     </div>
   </div>
 
-  <section class="panel">
-    <h2>Ask The Agent</h2>
-    <form method="post" action="/runs/{{ run.id }}/input" class="stack">
-      <label>Message during run
-        <textarea class="compact" name="message" placeholder="Add guidance, answer context, or correction for the active agent."></textarea>
-      </label>
-      <button>Send to agent</button>
-    </form>
-    <div class="list compact-list">
-      {% for item in agent_inputs %}
-      <article>
-        <strong>User input #{{ item.id }}</strong>
-        <span>{{ item.message }}</span>
-        <small>{% if item.consumed %}consumed{% else %}waiting for worker{% endif %} - {{ item.created_at }}</small>
-      </article>
-      {% else %}
-      <p class="empty">No mid-run input yet.</p>
-      {% endfor %}
-    </div>
-  </section>
 </section>
 
 <section class="grid">
@@ -151,7 +131,7 @@
   </div>
 </section>
 
-<section class="grid">
+<section class="work-grid">
   <div class="panel">
     <h2>Workspace / IDE</h2>
     <section class="workbench">
@@ -184,6 +164,27 @@ a local file viewer, or another web IDE here.</pre>
     {% endif %}
     </section>
   </div>
+
+  <section class="panel">
+    <h2>Message During Run</h2>
+    <form method="post" action="/runs/{{ run.id }}/input" class="stack">
+      <label>Send guidance to the active agent
+        <textarea class="compact message-box" name="message" placeholder="Add guidance, answer context, or correction for the active agent."></textarea>
+      </label>
+      <button>Send to agent</button>
+    </form>
+    <div class="list compact-list">
+      {% for item in agent_inputs %}
+      <article>
+        <strong>User input #{{ item.id }}</strong>
+        <span>{{ item.message }}</span>
+        <small>{% if item.consumed %}consumed{% else %}waiting for worker{% endif %} - {{ item.created_at }}</small>
+      </article>
+      {% else %}
+      <p class="empty">No mid-run input yet.</p>
+      {% endfor %}
+    </div>
+  </section>
 
   <div class="panel">
     <h2>Live Logs</h2>
