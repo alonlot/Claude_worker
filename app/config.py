@@ -11,6 +11,11 @@ CONFIG_PATH = Path("config.yaml")
 EXAMPLE_PATH = Path("config.example.yaml")
 
 
+class IndentedSafeDumper(yaml.SafeDumper):
+    def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:
+        return super().increase_indent(flow, False)
+
+
 @dataclass
 class AppConfig:
     host: str = "127.0.0.1"
@@ -92,7 +97,8 @@ def save_config_text(text: str, path: Path | str = CONFIG_PATH) -> Config:
     if not isinstance(parsed, dict):
         raise ValueError("config.yaml must contain a YAML mapping")
     path = Path(path)
-    path.write_text(text, encoding="utf-8")
+    normalized = yaml.dump(parsed, Dumper=IndentedSafeDumper, sort_keys=False, default_flow_style=False)
+    path.write_text(normalized, encoding="utf-8", newline="\n")
     return load_config(path)
 
 
