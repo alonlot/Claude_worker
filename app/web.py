@@ -55,18 +55,6 @@ def create_app(config: Config, db: Database) -> FastAPI:
         request.app.state.flash = "Interval runner stopped."
         return RedirectResponse("/", status_code=303)
 
-    @app.post("/demo/running")
-    async def demo_running_ticket(request: Request):
-        create_demo_running_ticket(db)
-        request.app.state.flash = "Demo running ticket created."
-        return RedirectResponse("/", status_code=303)
-
-    @app.post("/demo/clear")
-    async def clear_demo_ticket(request: Request):
-        clear_demo_running_ticket(db)
-        request.app.state.flash = "Demo ticket cleared."
-        return RedirectResponse("/", status_code=303)
-
     @app.post("/queue/reorder")
     async def reorder_queue(order: str = Form("")):
         ids = [int(value) for value in order.split(",") if value.strip().isdigit()]
@@ -166,50 +154,3 @@ def context(request: Request, db: Database, config: Config) -> dict:
         "allow_cr_fix": config.claude.allow_cr_fix,
         "interval_running": bool(request.app.state.worker.interval_task and not request.app.state.worker.interval_task.done()),
     }
-
-
-def create_demo_running_ticket(db: Database) -> int:
-    clear_demo_running_ticket(db)
-    db.upsert_ticket(
-        {
-            "key": "DEMO-101",
-            "summary": "Preview active ticket layout",
-            "status": "In Progress",
-            "url": "https://jira.local/browse/DEMO-101",
-            "description": (
-                "This is a temporary preview ticket. It shows how the dashboard will look while Claude is working: "
-                "ticket number, name, status, a compact description, live progress, branch metadata, and terminal output."
-            ),
-            "labels": ["demo", "preview"],
-            "eligibility": "eligible",
-            "skip_reason": "",
-        }
-    )
-    run_id = db.create_run("DEMO-101")
-    db.update_run(
-        run_id,
-        state="running_claude",
-        progress=47,
-        repo_url="git@gitlab.com:example/demo-repo.git",
-        base_branch="main",
-        branch_name="DEMO-101/by_claude_preview_active_ticket_layout",
-        workspace_path="workspaces/DEMO-101",
-    )
-    for phase, line in [
-        ("discover", "Resolved repo git@gitlab.com:example/demo-repo.git and base branch main."),
-        ("git", "checked out DEMO-101/by_claude_preview_active_ticket_layout"),
-        ("claude", "Reading ticket requirements and locating the relevant UI files."),
-        ("claude", "PROGRESS 47%"),
-        ("claude", "Updating the dashboard view and preparing a focused test pass."),
-    ]:
-        db.add_log(run_id, phase, line)
-    return run_id
-
-
-def clear_demo_running_ticket(db: Database) -> None:
-    demo_runs = db.fetchall("SELECT id FROM runs WHERE ticket_key='DEMO-101'")
-    for run in demo_runs:
-        db.execute("DELETE FROM logs WHERE run_id=?", (run["id"],))
-    db.execute("DELETE FROM runs WHERE ticket_key='DEMO-101'")
-    db.execute("DELETE FROM queue_items WHERE ticket_key='DEMO-101'")
-    db.execute("DELETE FROM tickets WHERE key='DEMO-101'")

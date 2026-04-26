@@ -8,8 +8,6 @@
   {% else %}
   <form method="post" action="/queue/start-interval"><button class="secondary">Start interval</button></form>
   {% endif %}
-  <form method="post" action="/demo/running"><button class="secondary">Preview running ticket</button></form>
-  <form method="post" action="/demo/clear"><button class="secondary">Clear preview</button></form>
 </section>
 
 <div id="status" hx-get="/partials/status" hx-trigger="every 2s" hx-swap="outerHTML">
