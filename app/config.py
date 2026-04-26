@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +74,25 @@ def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _config_section(cls: type, data: dict[str, Any], key: str) -> Any:
+    section = _section(data, key)
+    names = {item.name for item in fields(cls)}
+    values = {name: value for name, value in section.items() if name in names}
+    if cls is ClaudeConfig:
+        for bool_key in ["allow_cr_fix", "auto_cr_fix"]:
+            if bool_key in values:
+                values[bool_key] = _as_bool(values[bool_key])
+    return cls(**values)
+
+
 def load_config(path: Path | str = CONFIG_PATH) -> Config:
     path = Path(path)
     if not path.exists():
@@ -84,11 +103,11 @@ def load_config(path: Path | str = CONFIG_PATH) -> Config:
 
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return Config(
-        app=AppConfig(**_section(raw, "app")),
-        jira=JiraConfig(**_section(raw, "jira")),
-        git=GitConfig(**_section(raw, "git")),
-        claude=ClaudeConfig(**_section(raw, "claude")),
-        ui=UiConfig(**_section(raw, "ui")),
+        app=_config_section(AppConfig, raw, "app"),
+        jira=_config_section(JiraConfig, raw, "jira"),
+        git=_config_section(GitConfig, raw, "git"),
+        claude=_config_section(ClaudeConfig, raw, "claude"),
+        ui=_config_section(UiConfig, raw, "ui"),
     )
 
 
