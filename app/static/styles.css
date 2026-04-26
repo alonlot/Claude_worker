@@ -164,25 +164,192 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
 .compact-list {
   margin-top: 12px;
 }
-.question-pending {
-  border-color: #f0c36d !important;
-  background: #fffdf5 !important;
+.question-list {
+  display: grid;
+  gap: 14px;
 }
-.ide-frame {
-  min-height: 220px;
-  border: 1px dashed #b7c2d4;
+.question-card {
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcfe;
+  padding: 14px;
   display: grid;
-  align-content: center;
-  gap: 8px;
-  padding: 18px;
+  gap: 14px;
+}
+.question-pending {
+  border-color: #f0c36d;
+  background: #fffdf7;
+}
+.question-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: start;
+}
+.question-card h3 {
+  margin: 4px 0 0;
+  font-size: 18px;
+  line-height: 1.35;
+}
+.eyebrow {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.question-form {
+  display: grid;
+  gap: 12px;
+}
+.choice-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.choice-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px;
+  min-height: 70px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 12px;
+  cursor: pointer;
+}
+.choice-card:hover {
+  border-color: #9bbcf0;
+  background: #f8fbff;
+}
+.choice-card input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.choice-card span {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #e8edf5;
+  color: #233044;
+  font-size: 12px;
+  font-weight: 900;
+}
+.choice-card strong {
+  color: var(--ink);
+  line-height: 1.25;
+}
+.choice-card:has(input:checked) {
+  border-color: var(--accent);
+  background: #eef6ff;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.choice-card:has(input:checked) span {
+  background: var(--accent);
+  color: white;
+}
+.free-answer {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.answered-card {
+  display: grid;
+  gap: 4px;
+  border: 1px solid #bde3d9;
+  background: #effbf7;
+  border-radius: 8px;
+  padding: 12px;
+}
+.workbench {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #111827;
+}
+.workbench-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 14px;
+  background: #172033;
+  color: white;
+}
+.workbench-top div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.workbench-top span:not(.pill) {
+  color: #b9c6d8;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.workbench-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: #2a3447;
+}
+.workbench-meta span {
+  display: grid;
+  gap: 3px;
+  padding: 10px 14px;
+  background: #202a3c;
+  color: #cbd5e1;
+  overflow-wrap: anywhere;
+}
+.workbench-meta strong {
+  color: white;
+  font-size: 12px;
+}
+.ide-frame {
+  min-height: 300px;
+  display: grid;
+  align-items: stretch;
+  padding: 14px;
+}
+.file-preview {
+  border: 1px solid #334155;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0b1020;
+  color: #d8e4ff;
+}
+.file-preview-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  height: 34px;
+  padding: 0 12px;
+  background: #151b2d;
+}
+.file-preview-bar span {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #68758b;
+}
+.file-preview-bar span:first-child { background: #e35d5d; }
+.file-preview-bar span:nth-child(2) { background: #e3b341; }
+.file-preview-bar span:nth-child(3) { background: #59bd7a; }
+.file-preview pre {
+  margin: 0;
+  padding: 16px;
+  min-height: 250px;
+  white-space: pre-wrap;
 }
 .ide-embed {
   width: 100%;
   min-height: 560px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 0;
+  border-top: 1px solid #334155;
+  border-radius: 0;
   background: white;
 }
 .table-wrap {
@@ -355,6 +522,6 @@ textarea:not(.compact) {
 
 @media (max-width: 880px) {
   .topbar, .hero-head { flex-direction: column; align-items: stretch; }
-  .grid, .settings-layout, .run-focus, .run-facts, fieldset { grid-template-columns: 1fr; }
+  .grid, .settings-layout, .run-focus, .run-facts, .choice-grid, .workbench-meta, fieldset { grid-template-columns: 1fr; }
   .queue li { grid-template-columns: 1fr; }
 }

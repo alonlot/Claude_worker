@@ -82,24 +82,48 @@
 <section class="grid">
   <div class="panel">
     <h2>Agent Questions</h2>
-    <div class="list">
+    <div class="question-list">
       {% for question in questions %}
-      <article class="{% if question.state == 'pending' %}question-pending{% endif %}">
-        <strong>{{ question.agent_name }} asks</strong>
-        <span>{{ question.question }}</span>
+      <article class="question-card {% if question.state == 'pending' %}question-pending{% endif %}">
+        <div class="question-card-head">
+          <div>
+            <span class="eyebrow">{{ question.agent_name }} asks</span>
+            <h3>{{ question.question }}</h3>
+          </div>
+          <span class="pill {% if question.state == 'pending' %}warn{% endif %}">{{ question.state }}</span>
+        </div>
         {% if question.state == "pending" %}
-        <form method="post" action="/agent-questions/{{ question.id }}/answer" class="stack">
+        <form method="post" action="/agent-questions/{{ question.id }}/answer" class="question-form">
           <input type="hidden" name="run_id" value="{{ run.id }}">
-          <label class="check"><input type="radio" name="selected_answer" value="{{ question.option_a }}"> {{ question.option_a }}</label>
-          <label class="check"><input type="radio" name="selected_answer" value="{{ question.option_b }}"> {{ question.option_b }}</label>
-          <label class="check"><input type="radio" name="selected_answer" value="{{ question.option_c }}"> {{ question.option_c }}</label>
+          <div class="choice-grid">
+            <label class="choice-card">
+              <input type="radio" name="selected_answer" value="{{ question.option_a }}">
+              <span>A</span>
+              <strong>{{ question.option_a }}</strong>
+            </label>
+            <label class="choice-card">
+              <input type="radio" name="selected_answer" value="{{ question.option_b }}">
+              <span>B</span>
+              <strong>{{ question.option_b }}</strong>
+            </label>
+            <label class="choice-card">
+              <input type="radio" name="selected_answer" value="{{ question.option_c }}">
+              <span>C</span>
+              <strong>{{ question.option_c }}</strong>
+            </label>
+          </div>
           {% if question.free_input_enabled %}
-          <label>Free answer <input name="free_answer" placeholder="Type a custom answer"></label>
+          <label class="free-answer">Custom answer
+            <input name="free_answer" placeholder="Type a custom answer">
+          </label>
           {% endif %}
-          <button class="tiny">Submit answer</button>
+          <button>Submit answer</button>
         </form>
         {% else %}
-        <small>Answered: {{ question.answer }} - {{ question.answered_at }}</small>
+        <div class="answered-card">
+          <strong>{{ question.answer }}</strong>
+          <small>{{ question.answer_source }} - {{ question.answered_at }}</small>
+        </div>
         {% endif %}
       </article>
       {% else %}
@@ -130,16 +154,35 @@
 <section class="grid">
   <div class="panel">
     <h2>Workspace / IDE</h2>
+    <section class="workbench">
+      <div class="workbench-top">
+        <div>
+          <strong>{{ run.ticket_key }}</strong>
+          <span>{{ run.workspace_path or "Workspace not created yet" }}</span>
+        </div>
+        <span class="pill">{{ run.state }}</span>
+      </div>
+      <div class="workbench-meta">
+        <span><strong>Branch</strong>{{ run.branch_name or "not created yet" }}</span>
+        <span><strong>Base</strong>{{ run.base_branch or "-" }}</span>
+      </div>
     {% if ide_url %}
-    <iframe class="ide-embed" src="{{ ide_url }}"></iframe>
+      <iframe class="ide-embed" src="{{ ide_url }}"></iframe>
     {% else %}
-    <div class="ide-frame">
-      <strong>{{ run.workspace_path or "Workspace not created yet" }}</strong>
-      <p>The worker should update this run with its workspace path. Use this panel as the focus area for your local IDE integration or file viewer.</p>
-      <p>Add <code>ui.ide_url_template</code> in raw YAML to embed a local web IDE here.</p>
-      <small>Branch: {{ run.branch_name or "not created yet" }}</small>
-    </div>
+      <div class="ide-frame">
+        <div class="file-preview">
+          <div class="file-preview-bar">
+            <span></span><span></span><span></span>
+          </div>
+          <pre>workspace: {{ run.workspace_path or "pending" }}
+branch: {{ run.branch_name or "pending" }}
+
+Add ui.ide_url_template in raw YAML to embed code-server,
+a local file viewer, or another web IDE here.</pre>
+        </div>
+      </div>
     {% endif %}
+    </section>
   </div>
 
   <div class="panel">
