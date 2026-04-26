@@ -4,6 +4,7 @@
       <h2>Current Run</h2>
       {% if current %}
         <p><strong>#{{ current.id }} {{ current.ticket_key }}</strong> - {{ current.state }}</p>
+        <a class="text-link" href="/runs/{{ current.id }}">Focus ticket</a>
       {% else %}
         <p>No ticket is currently running.</p>
       {% endif %}
@@ -30,6 +31,19 @@
     <span>{{ current.progress }}%</span>
     <span>{{ current.branch_name }}</span>
   </div>
+  {% if current_questions %}
+  <div class="inline-alert">
+    {{ current_questions|length }} question{% if current_questions|length != 1 %}s{% endif %} waiting for your answer.
+    <a href="/runs/{{ current.id }}">Answer now</a>
+  </div>
+  {% endif %}
+  {% if current_sub_agents %}
+  <div class="subagent-strip">
+    {% for agent in current_sub_agents[:4] %}
+    <span class="pill">{{ agent.name }} - {{ agent.status }} {{ agent.progress }}%</span>
+    {% endfor %}
+  </div>
+  {% endif %}
   <pre class="terminal">{% for log in current_logs %}[{{ log.phase }}] {{ log.line }}
 {% endfor %}</pre>
   {% else %}

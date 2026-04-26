@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
@@ -91,6 +91,37 @@ def create_app(config: Config, db: Database) -> FastAPI:
         except Exception as exc:
             request.app.state.flash = f"Push failed: {exc}"
         return RedirectResponse("/", status_code=303)
+
+    @app.get("/runs/{run_id}", response_class=HTMLResponse)
+    async def run_detail(run_id: int, request: Request):
+        detail = run_detail_context(request, db, request.app.state.config, run_id)
+        if detail["run"] is None:
+            return RedirectResponse("/", status_code=303)
+        return templates.TemplateResponse("run_detail.html", detail)
+
+    @app.post("/runs/{run_id}/input")
+    async def add_run_input(run_id: int, message: str = Form(...)):
+        clean = message.strip()
+        if clean:
+            db.add_agent_input(run_id, clean)
+            db.add_log(run_id, "user", clean)
+        return RedirectResponse(f"/runs/{run_id}", status_code=303)
+
+    @app.post("/agent-questions/{question_id}/answer")
+    async def answer_agent_question(
+        question_id: int,
+        run_id: int = Form(...),
+        selected_answer: str = Form(""),
+        free_answer: str = Form(""),
+    ):
+        free_answer = free_answer.strip()
+        selected_answer = selected_answer.strip()
+        answer = free_answer or selected_answer
+        source = "free_input" if free_answer else "option"
+        if answer:
+            db.answer_agent_question(question_id, answer, source)
+            db.add_log(run_id, "user", f"Answered question #{question_id}: {answer}")
+        return RedirectResponse(f"/runs/{run_id}", status_code=303)
 
     @app.get("/runs/{run_id}/logs", response_class=PlainTextResponse)
     async def run_logs(run_id: int):
@@ -219,6 +250,14 @@ def context(request: Request, db: Database, config: Config) -> dict:
         current_ticket = db.fetchone("SELECT * FROM tickets WHERE key=?", (current["ticket_key"],))
         current_logs = db.fetchall("SELECT * FROM logs WHERE run_id=? ORDER BY id DESC LIMIT 120", (current["id"],))
         current_logs = list(reversed(current_logs))
+    current_questions = []
+    current_sub_agents = []
+    if current:
+        current_questions = db.fetchall(
+            "SELECT * FROM agent_questions WHERE run_id=? AND state='pending' ORDER BY id",
+            (current["id"],),
+        )
+        current_sub_agents = db.fetchall("SELECT * FROM sub_agents WHERE run_id=? ORDER BY updated_at DESC", (current["id"],))
     flash = pop_flash(request)
     return {
         "request": request,
@@ -227,6 +266,8 @@ def context(request: Request, db: Database, config: Config) -> dict:
         "current": current,
         "current_ticket": current_ticket,
         "current_logs": current_logs,
+        "current_questions": current_questions,
+        "current_sub_agents": current_sub_agents,
         "queue": db.fetchall(
             """
             SELECT q.*, t.summary, t.status
@@ -243,6 +284,27 @@ def context(request: Request, db: Database, config: Config) -> dict:
     }
 
 
+def run_detail_context(request: Request, db: Database, config: Config, run_id: int) -> dict:
+    run = db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+    ticket = db.fetchone("SELECT * FROM tickets WHERE key=?", (run["ticket_key"],)) if run else None
+    return {
+        "request": request,
+        "title": config.ui.title,
+        "flash": pop_flash(request),
+        "run": run,
+        "ticket": ticket,
+        "logs": db.fetchall("SELECT * FROM logs WHERE run_id=? ORDER BY id", (run_id,)),
+        "questions": db.fetchall("SELECT * FROM agent_questions WHERE run_id=? ORDER BY id DESC", (run_id,)),
+        "pending_questions": db.fetchall(
+            "SELECT * FROM agent_questions WHERE run_id=? AND state='pending' ORDER BY id",
+            (run_id,),
+        ),
+        "agent_inputs": db.fetchall("SELECT * FROM agent_inputs WHERE run_id=? ORDER BY id DESC", (run_id,)),
+        "sub_agents": db.fetchall("SELECT * FROM sub_agents WHERE run_id=? ORDER BY updated_at DESC", (run_id,)),
+        "ide_url": build_ide_url(run_id, run),
+    }
+
+
 def pop_flash(request: Request) -> str:
     flash = getattr(request.app.state, "flash", "")
     request.app.state.flash = ""
@@ -251,3 +313,23 @@ def pop_flash(request: Request) -> str:
 
 def split_lines(value: str) -> list[str]:
     return [line.strip() for line in value.replace(",", "\n").splitlines() if line.strip()]
+
+
+def build_ide_url(run_id: int, run) -> str:
+    try:
+        template = (load_config_data().get("ui") or {}).get("ide_url_template", "")
+    except Exception:
+        return ""
+    if not template or not run:
+        return ""
+    workspace_path = run["workspace_path"] or ""
+    try:
+        return template.format(
+            run_id=run_id,
+            ticket_key=quote(run["ticket_key"] or ""),
+            workspace_path=quote(workspace_path),
+            workspace_path_raw=workspace_path,
+            branch_name=quote(run["branch_name"] or ""),
+        )
+    except (KeyError, ValueError):
+        return ""

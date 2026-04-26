@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block content %}
+{% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+
+<section class="run-focus">
+  <div class="panel">
+    <div class="hero-head">
+      <div>
+        <h2>{{ run.ticket_key }}{% if ticket %} - {{ ticket.summary }}{% endif %}</h2>
+        <p>{{ run.state }} - {{ run.progress }}%</p>
+      </div>
+      <div class="row">
+        <a class="button-link secondary" href="/">Dashboard</a>
+        {% if run.state in ["preparing_git", "running_claude", "reviewing"] %}
+        <form method="post" action="/runs/{{ run.id }}/cancel"><button class="danger">Cancel</button></form>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if ticket %}
+    <article class="ticket-focus">
+      <div class="ticket-focus-head">
+        <span class="ticket">{{ ticket.key }}</span>
+        <span class="pill">{{ ticket.status }}</span>
+      </div>
+      <h3>{{ ticket.summary }}</h3>
+      <p>{{ ticket.description[:700] }}{% if ticket.description|length > 700 %}...{% endif %}</p>
+    </article>
+    {% endif %}
+
+    <div class="progress"><span style="width: {{ run.progress }}%"></span></div>
+    <div class="meta">
+      <span>{{ run.branch_name or "No branch yet" }}</span>
+      <span>{{ run.workspace_path or "No workspace yet" }}</span>
+    </div>
+  </div>
+
+  <section class="panel">
+    <h2>Ask The Agent</h2>
+    <form method="post" action="/runs/{{ run.id }}/input" class="stack">
+      <label>Message during run
+        <textarea class="compact" name="message" placeholder="Add guidance, answer context, or correction for the active agent."></textarea>
+      </label>
+      <button>Send to agent</button>
+    </form>
+    <div class="list compact-list">
+      {% for item in agent_inputs %}
+      <article>
+        <strong>User input #{{ item.id }}</strong>
+        <span>{{ item.message }}</span>
+        <small>{% if item.consumed %}consumed{% else %}waiting for worker{% endif %} - {{ item.created_at }}</small>
+      </article>
+      {% else %}
+      <p class="empty">No mid-run input yet.</p>
+      {% endfor %}
+    </div>
+  </section>
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <h2>Agent Questions</h2>
+    <div class="list">
+      {% for question in questions %}
+      <article class="{% if question.state == 'pending' %}question-pending{% endif %}">
+        <strong>{{ question.agent_name }} asks</strong>
+        <span>{{ question.question }}</span>
+        {% if question.state == "pending" %}
+        <form method="post" action="/agent-questions/{{ question.id }}/answer" class="stack">
+          <input type="hidden" name="run_id" value="{{ run.id }}">
+          <label class="check"><input type="radio" name="selected_answer" value="{{ question.option_a }}"> {{ question.option_a }}</label>
+          <label class="check"><input type="radio" name="selected_answer" value="{{ question.option_b }}"> {{ question.option_b }}</label>
+          <label class="check"><input type="radio" name="selected_answer" value="{{ question.option_c }}"> {{ question.option_c }}</label>
+          {% if question.free_input_enabled %}
+          <label>Free answer <input name="free_answer" placeholder="Type a custom answer"></label>
+          {% endif %}
+          <button class="tiny">Submit answer</button>
+        </form>
+        {% else %}
+        <small>Answered: {{ question.answer }} - {{ question.answered_at }}</small>
+        {% endif %}
+      </article>
+      {% else %}
+      <p class="empty">No questions from agents yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Sub Agents</h2>
+    <div class="list">
+      {% for agent in sub_agents %}
+      <article>
+        <div class="ticket-focus-head">
+          <strong>{{ agent.name }}</strong>
+          <span class="pill">{{ agent.status }} {{ agent.progress }}%</span>
+        </div>
+        <span>{{ agent.task }}</span>
+        {% if agent.summary %}<small>{{ agent.summary }}</small>{% endif %}
+      </article>
+      {% else %}
+      <p class="empty">No sub-agents reported yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <h2>Workspace / IDE</h2>
+    {% if ide_url %}
+    <iframe class="ide-embed" src="{{ ide_url }}"></iframe>
+    {% else %}
+    <div class="ide-frame">
+      <strong>{{ run.workspace_path or "Workspace not created yet" }}</strong>
+      <p>The worker should update this run with its workspace path. Use this panel as the focus area for your local IDE integration or file viewer.</p>
+      <p>Add <code>ui.ide_url_template</code> in raw YAML to embed a local web IDE here.</p>
+      <small>Branch: {{ run.branch_name or "not created yet" }}</small>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h2>Live Logs</h2>
+    <pre class="terminal tall">{% for log in logs %}[{{ log.phase }}] {{ log.line }}
+{% endfor %}</pre>
+  </div>
+</section>
+{% endblock %}

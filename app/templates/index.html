@@ -61,6 +61,7 @@
         <span>{{ run.branch_name or "No branch" }}</span>
         <small>{{ run.state }} - {{ run.updated_at }}</small>
         <div class="row">
+          <a class="button-link tiny secondary" href="/runs/{{ run.id }}">Open</a>
           <form method="post" action="/tickets/{{ run.ticket_key }}/rerun"><button class="tiny secondary">Rerun</button></form>
           {% if run.state in ["done", "needs_cr_fix", "pushed"] %}
           <form method="post" action="/runs/{{ run.id }}/push"><button class="tiny">Push</button></form>

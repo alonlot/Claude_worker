@@ -91,6 +91,20 @@ button.secondary { background: #e8edf5; color: #233044; }
 button.secondary:hover { background: #dce4ef; }
 button.danger { background: var(--danger); }
 button.tiny { padding: 7px 10px; font-size: 12px; }
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-weight: 700;
+  background: var(--accent);
+  color: white;
+}
+.button-link.secondary { background: #e8edf5; color: #233044; }
+.button-link.tiny { padding: 7px 10px; font-size: 12px; }
+.text-link { color: var(--accent); font-weight: 700; text-decoration: none; }
 
 .progress {
   width: 100%;
@@ -115,6 +129,59 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
   border-radius: 8px;
   padding: 14px;
   white-space: pre-wrap;
+}
+.terminal.tall { min-height: 520px; }
+.inline-alert {
+  border: 1px solid #f0c36d;
+  background: #fff8e6;
+  color: #684600;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 12px 0;
+}
+.inline-alert a { color: #684600; font-weight: 800; }
+.subagent-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.run-focus {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(340px, 0.7fr);
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.stack {
+  display: grid;
+  gap: 10px;
+}
+.compact-list {
+  margin-top: 12px;
+}
+.question-pending {
+  border-color: #f0c36d !important;
+  background: #fffdf5 !important;
+}
+.ide-frame {
+  min-height: 220px;
+  border: 1px dashed #b7c2d4;
+  border-radius: 8px;
+  background: #fbfcfe;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  padding: 18px;
+}
+.ide-embed {
+  width: 100%;
+  min-height: 560px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+}
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .queue { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 8px; }
 .queue li, .list article {
@@ -226,6 +293,6 @@ textarea:not(.compact) {
 
 @media (max-width: 880px) {
   .topbar, .hero-head { flex-direction: column; align-items: stretch; }
-  .grid, .settings-layout, fieldset { grid-template-columns: 1fr; }
+  .grid, .settings-layout, .run-focus, fieldset { grid-template-columns: 1fr; }
   .queue li { grid-template-columns: 1fr; }
 }

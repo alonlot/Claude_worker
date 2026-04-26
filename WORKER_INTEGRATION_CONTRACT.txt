@@ -151,6 +151,7 @@ Known fields:
     claude.auto_cr_fix
 
     ui.title
+    ui.ide_url_template
 
 The real worker may add fields, for example:
 
@@ -170,6 +171,26 @@ Requirement:
   - git.token
   - claude.api_key
   - any extra key containing token, secret, password, or api_key
+
+Optional IDE embedding:
+
+    ui.ide_url_template
+
+If set, the focused run page embeds this URL in an iframe. The template supports:
+
+    {run_id}
+    {ticket_key}
+    {workspace_path}
+    {workspace_path_raw}
+    {branch_name}
+
+Example:
+
+    ui:
+      title: Jira Claude Worker
+      ide_url_template: http://127.0.0.1:8080/?folder={workspace_path}
+
+Use this for code-server, a local web IDE, or any local file viewer that can open the run workspace.
 
 
 3. Database Contract
@@ -192,6 +213,9 @@ Tables:
     queue_items
     runs
     logs
+    agent_questions
+    agent_inputs
+    sub_agents
 
 The website reads these tables directly. Therefore the real worker must keep them compatible.
 
@@ -535,6 +559,183 @@ Progress from logs:
 - This is optional but recommended.
 
 
+7A. Agent Questions, User Input, And Sub-Agent Tables
+-----------------------------------------------------
+These tables let the worker interact with the user while a ticket is running.
+
+The website already supports:
+
+- showing questions from the agent,
+- letting the user choose one of 3 options,
+- letting the user type a free custom answer,
+- letting the user send extra instructions mid-run,
+- showing sub-agents summoned by the main agent,
+- and opening a focused run page for one ticket.
+
+
+Table: agent_questions
+----------------------
+Purpose:
+
+    Stores questions that the main agent or a sub-agent asks the user during a run.
+
+Schema:
+
+    id INTEGER PRIMARY KEY AUTOINCREMENT
+    run_id INTEGER NOT NULL
+    agent_name TEXT NOT NULL DEFAULT 'main'
+    question TEXT NOT NULL
+    option_a TEXT NOT NULL
+    option_b TEXT NOT NULL
+    option_c TEXT NOT NULL
+    free_input_enabled INTEGER NOT NULL DEFAULT 1
+    state TEXT NOT NULL DEFAULT 'pending'
+    answer TEXT NOT NULL DEFAULT ''
+    answer_source TEXT NOT NULL DEFAULT ''
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    answered_at TEXT
+
+Worker behavior:
+
+- Insert a row when the agent needs user input.
+- Always provide exactly 3 option strings:
+
+      option_a
+      option_b
+      option_c
+
+- Set free_input_enabled = 1 if the user may write a custom answer.
+- Set state = pending when asking.
+- Pause or periodically wait for the answer if the decision blocks the agent.
+- Continue automatically when state becomes answered.
+- Read answer and answer_source.
+
+Website behavior:
+
+- Pending questions appear on the focused run page.
+- The user can select one of the 3 options.
+- The user can also type a custom free answer.
+- If both option and free answer are provided, free answer wins.
+- On submit, the website sets:
+
+      state = answered
+      answer = selected/custom answer
+      answer_source = option OR free_input
+      answered_at = current timestamp
+
+Recommended worker polling query:
+
+    SELECT * FROM agent_questions
+    WHERE run_id = ? AND state = 'answered'
+    ORDER BY answered_at
+
+Recommended blocking loop:
+
+    1. Insert pending question.
+    2. Log that the agent is waiting for user input.
+    3. Poll agent_questions.id every 2-5 seconds.
+    4. When answered, send the answer back into the agent process or next prompt.
+    5. Log the selected answer in a non-secret-safe way.
+
+
+Table: agent_inputs
+-------------------
+Purpose:
+
+    Stores mid-run user messages that are not answers to a specific question.
+
+Schema:
+
+    id INTEGER PRIMARY KEY AUTOINCREMENT
+    run_id INTEGER NOT NULL
+    message TEXT NOT NULL
+    consumed INTEGER NOT NULL DEFAULT 0
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    consumed_at TEXT
+
+Website behavior:
+
+- Focused run page has a "Message during run" input.
+- When the user submits text, the website inserts agent_inputs row.
+- The website also writes a user log line.
+
+Worker behavior:
+
+- Poll for unconsumed input while the agent is running:
+
+      SELECT * FROM agent_inputs
+      WHERE run_id = ? AND consumed = 0
+      ORDER BY id
+
+- Deliver each message to the agent if possible.
+- Mark consumed = 1 and consumed_at = current timestamp after delivering.
+- If live delivery is not technically possible with the current Claude process, include the message
+  in the next Claude prompt or next phase.
+
+Important:
+
+- Do not ignore agent_inputs silently.
+- If an input cannot be delivered immediately, log that it will be used in the next phase.
+
+
+Table: sub_agents
+-----------------
+Purpose:
+
+    Stores sub-agents summoned by the main agent so the user can see them in the UI.
+
+Schema:
+
+    id INTEGER PRIMARY KEY AUTOINCREMENT
+    run_id INTEGER NOT NULL
+    name TEXT NOT NULL
+    task TEXT NOT NULL DEFAULT ''
+    status TEXT NOT NULL DEFAULT 'starting'
+    progress INTEGER NOT NULL DEFAULT 0
+    summary TEXT NOT NULL DEFAULT ''
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+Unique index:
+
+    run_id + name
+
+Field meaning:
+
+    name
+        Stable sub-agent name. Example: backend-agent, ui-agent, tests-agent.
+
+    task
+        What the sub-agent is doing.
+
+    status
+        starting
+        running
+        blocked
+        done
+        failed
+        cancelled
+
+    progress
+        0-100 for this sub-agent only.
+
+    summary
+        Short latest status or final result.
+
+Worker behavior:
+
+- When the main agent summons a sub-agent, upsert a sub_agents row.
+- Update progress/status while it works.
+- If the sub-agent asks a question, insert agent_questions with agent_name = sub-agent name.
+- When it finishes, set status = done and progress = 100.
+- If it fails, set status = failed and summary = concise failure reason.
+
+Website behavior:
+
+- Dashboard shows a compact strip of active sub-agents for the current run.
+- Focused run page shows full sub-agent list.
+
+
 8. Required Worker Interface
 ----------------------------
 The current app.web.create_app creates:
@@ -592,6 +793,12 @@ Routes and expected worker/database effects:
         Render dashboard.
         Reads tickets, queue_items, runs, and logs.
 
+    GET /runs/{run_id}
+        Render focused run page for one ticket.
+        Reads run, ticket, logs, agent_questions, agent_inputs, and sub_agents.
+        This is where the user sees the "IDE/workspace" focus panel, all agent questions,
+        mid-run inputs, and sub-agent activity.
+
     POST /jira/scan
         Calls await worker.scan_jira().
         Expected DB effect:
@@ -633,6 +840,18 @@ Routes and expected worker/database effects:
 
     POST /runs/{run_id}/push
         Calls worker.push_run(run_id).
+
+    POST /runs/{run_id}/input
+        Website inserts agent_inputs row with the user's mid-run message.
+        Website also adds a logs row with phase = user.
+        Worker should later consume this row and deliver it to the active agent or next phase.
+
+    POST /agent-questions/{question_id}/answer
+        Website answers a pending agent question.
+        User can choose option_a, option_b, option_c, or write free input.
+        Free input wins if both free input and option are provided.
+        Website updates agent_questions.state, answer, answer_source, answered_at.
+        Website also adds a logs row with phase = user.
 
     GET /runs/{run_id}/logs
         Website reads logs table and returns plain text.
@@ -882,6 +1101,8 @@ Current Run panel:
       runs.progress
       runs.branch_name
       latest logs
+      pending question count/link
+      compact sub-agent status strip
 
 Therefore, if the active ticket panel looks empty, check:
 
@@ -889,6 +1110,33 @@ Therefore, if the active ticket panel looks empty, check:
 - Is run state one of active states?
 - Is tickets.description populated?
 - Are logs being inserted with the correct run_id?
+
+Focused Run page:
+
+- Route:
+
+      GET /runs/{run_id}
+
+- Displays:
+
+      ticket key
+      ticket summary
+      ticket status
+      longer ticket description
+      run state
+      run progress
+      branch name
+      workspace path
+      pending and answered agent questions
+      3-answer choices plus free input for each pending question
+      mid-run "Message during run" form
+      submitted user messages and whether the worker consumed them
+      sub-agent names, tasks, status, progress, and summaries
+      workspace/IDE focus panel
+      full logs
+
+- The workspace/IDE panel currently displays workspace_path and branch_name.
+  If you add a real browser IDE/file viewer later, embed or link it here.
 
 Finished Runs panel:
 
@@ -1085,6 +1333,9 @@ Do not:
 - Mark a run done before review_output is saved if review is enabled.
 - Delete failed workspaces automatically.
 - Log tokens or credentialed Git URLs.
+- Ask the user a blocking question only in Claude output; insert agent_questions so it appears in UI.
+- Spawn sub-agents without updating sub_agents, because the user asked to see them.
+- Ignore agent_inputs rows after the user sends mid-run guidance.
 
 
 21. Acceptance Checklist
@@ -1099,6 +1350,13 @@ The real worker is integrated correctly when all of these are true:
 - Queue reorder changes priority.
 - Run once starts exactly one ticket.
 - Current Run shows ticket key, name, status, short description, progress, branch, and logs.
+- Focus ticket opens /runs/{run_id}.
+- Focused run page shows questions, mid-run input, sub-agents, workspace, and logs.
+- Agent can create a question with exactly 3 options and optional free input.
+- User can answer an agent question from the focused run page.
+- User can send extra input mid-run from the focused run page.
+- Worker consumes agent_inputs rows or logs why delivery is delayed.
+- Main agent/sub-agents are visible in sub_agents while they run.
 - Logs appear during execution, not only after execution.
 - Progress changes during execution.
 - Cancel stops active work and marks cancelled.

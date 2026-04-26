@@ -55,6 +55,45 @@ CREATE TABLE IF NOT EXISTS logs (
     line TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS agent_questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    agent_name TEXT NOT NULL DEFAULT 'main',
+    question TEXT NOT NULL,
+    option_a TEXT NOT NULL,
+    option_b TEXT NOT NULL,
+    option_c TEXT NOT NULL,
+    free_input_enabled INTEGER NOT NULL DEFAULT 1,
+    state TEXT NOT NULL DEFAULT 'pending',
+    answer TEXT NOT NULL DEFAULT '',
+    answer_source TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    answered_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS agent_inputs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    message TEXT NOT NULL,
+    consumed INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    consumed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS sub_agents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    task TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'starting',
+    progress INTEGER NOT NULL DEFAULT 0,
+    summary TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sub_agents_run_name ON sub_agents(run_id, name);
 """
 
 
@@ -154,6 +193,67 @@ class Database:
 
     def add_log(self, run_id: int, phase: str, line: str) -> None:
         self.execute("INSERT INTO logs(run_id, phase, line) VALUES (?, ?, ?)", (run_id, phase, line.rstrip()))
+
+    def create_agent_question(
+        self,
+        run_id: int,
+        question: str,
+        options: list[str],
+        agent_name: str = "main",
+        free_input_enabled: bool = True,
+    ) -> int:
+        padded = (options + ["", "", ""])[:3]
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO agent_questions(
+                    run_id, agent_name, question, option_a, option_b, option_c, free_input_enabled
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (run_id, agent_name, question, padded[0], padded[1], padded[2], int(free_input_enabled)),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def answer_agent_question(self, question_id: int, answer: str, answer_source: str) -> None:
+        self.execute(
+            """
+            UPDATE agent_questions
+            SET state='answered', answer=?, answer_source=?, answered_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (answer, answer_source, question_id),
+        )
+
+    def add_agent_input(self, run_id: int, message: str) -> int:
+        with self.connect() as conn:
+            cur = conn.execute("INSERT INTO agent_inputs(run_id, message) VALUES (?, ?)", (run_id, message))
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def upsert_sub_agent(
+        self,
+        run_id: int,
+        name: str,
+        task: str = "",
+        status: str = "running",
+        progress: int = 0,
+        summary: str = "",
+    ) -> None:
+        self.execute(
+            """
+            INSERT INTO sub_agents(run_id, name, task, status, progress, summary)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, name) DO UPDATE SET
+                task=excluded.task,
+                status=excluded.status,
+                progress=excluded.progress,
+                summary=excluded.summary,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (run_id, name, task, status, max(0, min(100, int(progress))), summary),
+        )
 
     def set_queue_state(self, queue_id: int, state: str) -> None:
         self.execute(
