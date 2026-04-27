@@ -24,6 +24,7 @@ python -m app serve
 python -m app run-once
 python -m app run-interval
 python -m app init-db
+python -m app seed-demo
 pytest
 ```
 
@@ -33,4 +34,5 @@ pytest
 - Python owns all Git operations. Claude prompts explicitly forbid Git commands.
 - Set `git.default_repo_url` and `git.default_base_branch` when most tickets should use the same repository.
 - The Claude executable is configurable at `claude.command`; use an absolute path if `claude` is not on `PATH`.
+- See `CONFIG_GUIDE.md` for setup, GitHub/GitLab review notes, and demo data instructions.
 - See `WORKER_INTEGRATION_CONTRACT.txt` for the UI/database contract the worker follows.

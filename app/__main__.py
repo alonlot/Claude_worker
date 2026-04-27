@@ -7,6 +7,7 @@ import uvicorn
 
 from app.config import load_config
 from app.db import Database
+from app.demo import seed_demo
 from app.runner import Worker
 from app.web import create_app
 
@@ -18,6 +19,7 @@ def main() -> None:
     sub.add_parser("init-db", help="Create or migrate the SQLite database")
     sub.add_parser("run-once", help="Scan Jira and run one queued ticket")
     sub.add_parser("run-interval", help="Run forever on the configured interval")
+    sub.add_parser("seed-demo", help="Create a fake ticket/run/code-review demo")
     args = parser.parse_args()
 
     config = load_config()
@@ -31,6 +33,11 @@ def main() -> None:
     if args.command == "serve":
         app = create_app(config, db)
         uvicorn.run(app, host=config.app.host, port=config.app.port)
+        return
+
+    if args.command == "seed-demo":
+        run_id = seed_demo(db)
+        print(f"Seeded demo run #{run_id}")
         return
 
     worker = Worker(config, db)
