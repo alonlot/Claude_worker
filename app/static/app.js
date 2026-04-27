@@ -198,6 +198,9 @@ function initWebIde(root = document) {
   let monacoModifiedModel = null;
   let monacoCodeHost = null;
   let monacoDiffHost = null;
+  let currentFiles = [];
+  let lastLoadedContent = "";
+  let lastLoadedPath = "";
 
   const extensionLanguage = {
     ".py": "python",
@@ -305,6 +308,34 @@ function initWebIde(root = document) {
     return editor.value;
   };
 
+  const hasUnsavedChanges = () => {
+    if (!activePath) return false;
+    return getEditorContent() !== lastLoadedContent;
+  };
+
+  const setFiles = (files) => {
+    currentFiles = files;
+    fileList.textContent = "";
+    if (!files.length) {
+      const empty = document.createElement("span");
+      empty.className = "empty";
+      empty.textContent = "No workspace files yet.";
+      fileList.appendChild(empty);
+      return;
+    }
+    for (const file of files) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "web-ide-file";
+      if (file.path === activePath) {
+        button.classList.add("active");
+      }
+      button.textContent = file.path;
+      button.addEventListener("click", () => loadFile(file.path));
+      fileList.appendChild(button);
+    }
+  };
+
   const loadFile = async (path) => {
     setStatus("Loading...");
     const response = await fetch(`/runs/${runId}/workspace/file?path=${encodeURIComponent(path)}`, { cache: "no-store" });
@@ -315,8 +346,11 @@ function initWebIde(root = document) {
     }
     activePath = data.path;
     activeOriginalContent = data.original_content || "";
+    lastLoadedPath = activePath;
+    lastLoadedContent = data.content || "";
     current.textContent = activePath;
     await setEditorContent(activePath, data.content || "", activeOriginalContent);
+    setFiles(currentFiles);
     save.disabled = false;
     setStatus("Ready");
   };
@@ -325,22 +359,16 @@ function initWebIde(root = document) {
     try {
       const response = await fetch(`/runs/${runId}/workspace/files`, { cache: "no-store" });
       const files = await response.json();
-      fileList.textContent = "";
+      setFiles(files);
       if (!files.length) {
-        const empty = document.createElement("span");
-        empty.className = "empty";
-        empty.textContent = "No workspace files yet.";
-        fileList.appendChild(empty);
         setStatus("Workspace unavailable");
         return;
       }
-      for (const file of files) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "web-ide-file";
-        button.textContent = file.path;
-        button.addEventListener("click", () => loadFile(file.path));
-        fileList.appendChild(button);
+      if (activePath) {
+        const exists = files.some((file) => file.path === activePath);
+        if (exists) {
+          return;
+        }
       }
       await loadFile(files[0].path);
     } catch {
@@ -370,6 +398,7 @@ function initWebIde(root = document) {
       announce("Save failed");
       return;
     }
+    lastLoadedContent = getEditorContent();
     setStatus("Saved");
     announce("File saved");
   });
@@ -382,6 +411,43 @@ function initWebIde(root = document) {
       await setEditorContent(activePath, getEditorContent(), activeOriginalContent);
     });
   }
+
+  const autoRefresh = async () => {
+    try {
+      const response = await fetch(`/runs/${runId}/workspace/files`, { cache: "no-store" });
+      if (!response.ok) return;
+      const files = await response.json();
+      const oldSignature = currentFiles.map((file) => file.path).join("|");
+      const newSignature = files.map((file) => file.path).join("|");
+      if (oldSignature !== newSignature) {
+        setFiles(files);
+      } else if (activePath) {
+        setFiles(currentFiles);
+      }
+      if (!activePath || hasUnsavedChanges()) {
+        if (hasUnsavedChanges()) {
+          setStatus("Live updates paused: unsaved edits.");
+        }
+        return;
+      }
+      const fileResponse = await fetch(`/runs/${runId}/workspace/file?path=${encodeURIComponent(activePath)}`, { cache: "no-store" });
+      if (!fileResponse.ok) return;
+      const fileData = await fileResponse.json();
+      const remoteContent = fileData.content || "";
+      const remoteOriginal = fileData.original_content || "";
+      if (activePath === lastLoadedPath && remoteContent !== lastLoadedContent) {
+        activeOriginalContent = remoteOriginal;
+        lastLoadedContent = remoteContent;
+        await setEditorContent(activePath, remoteContent, remoteOriginal);
+        setStatus("Updated from live workspace.");
+      }
+    } catch {
+      // Ignore transient auto-refresh failures.
+    }
+  };
+
+  const refreshIntervalId = window.setInterval(autoRefresh, 3000);
+  window.addEventListener("beforeunload", () => window.clearInterval(refreshIntervalId), { once: true });
 }
 
 function initCodeReviewAutoScan(root = document) {
