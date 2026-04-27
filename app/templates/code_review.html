@@ -9,11 +9,11 @@
     <a class="button-link secondary" href="/runs/{{ run.id }}">Back to run</a>
   </div>
 
-  <form method="post" action="/runs/{{ run.id }}/code-review/scan" class="settings-form">
+  <form method="post" action="/runs/{{ run.id }}/code-review/scan-notes" class="settings-form">
     <fieldset>
       <legend>Scan Review</legend>
       <label class="wide">Pull request / merge request URL
-        <input name="source_url" value="{{ suggested_review_url }}" placeholder="https://github.com/owner/repo/pull/123">
+        <input id="review-source-url" name="source_url" value="{{ suggested_review_url }}" placeholder="https://github.com/owner/repo/pull/123">
       </label>
       {% if suggested_review_url %}
       <p class="form-hint wide">Auto-detected from this run branch. You can replace it before scanning.</p>
@@ -21,13 +21,19 @@
       <p class="form-hint wide">No PR/MR was auto-detected. Paste a URL to scan review notes.</p>
       {% endif %}
       <label class="check">
-        <input type="checkbox" name="auto_cr" {% if auto_cr %}checked{% endif %}>
+        <input id="review-auto-cr" type="checkbox" name="auto_cr" {% if auto_cr %}checked{% endif %}>
         Auto CR after scan
       </label>
-      <button data-loading-text="Scanning...">Scan review notes</button>
+      <div class="row">
+        <button data-loading-text="Scanning notes...">Scan review notes</button>
+        <button class="secondary" type="submit" formaction="/runs/{{ run.id }}/code-review/scan-ci" data-loading-text="Scanning CI...">Scan CI</button>
+      </div>
+      <small id="review-auto-status" class="form-hint">Auto-scan refreshes notes and CI every 45 seconds while this page is open.</small>
     </fieldset>
   </form>
 </section>
+
+<div id="code-review-auto" data-run-id="{{ run.id }}" data-current-notes="{{ review_notes|length }}" data-current-ci="{{ ci_jobs|length }}"></div>
 
 <section class="grid">
   <div class="panel">
@@ -97,6 +103,10 @@
     <form method="post" action="/runs/{{ run.id }}/code-review/fix-ci" class="stack">
       <label>User notes for Claude (optional)
         <textarea class="compact message-box" name="user_notes" placeholder="Extra guidance for addressing failing CI jobs."></textarea>
+      </label>
+      <label class="check check-placeholder" aria-hidden="true">
+        <input type="checkbox" tabindex="-1" disabled>
+        Comment back to review notes
       </label>
       <button data-loading-text="Starting CI fix...">Fix CI</button>
     </form>

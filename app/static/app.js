@@ -381,16 +381,75 @@ function initWebIde(root = document) {
   }
 }
 
+function initCodeReviewAutoScan(root = document) {
+  const panel = root.querySelector("#code-review-auto");
+  if (!panel || panel.dataset.autoScanBound === "1") return;
+  panel.dataset.autoScanBound = "1";
+  const runId = panel.dataset.runId;
+  if (!runId) return;
+  const sourceInput = document.querySelector("#review-source-url");
+  const autoCrCheckbox = document.querySelector("#review-auto-cr");
+  const status = document.querySelector("#review-auto-status");
+  let currentNotes = Number.parseInt(panel.dataset.currentNotes || "0", 10) || 0;
+  let currentCi = Number.parseInt(panel.dataset.currentCi || "0", 10) || 0;
+  let inFlight = false;
+
+  const setStatus = (message) => {
+    if (status) status.textContent = message;
+  };
+
+  const refresh = async () => {
+    if (inFlight) return;
+    const sourceUrl = (sourceInput && sourceInput.value ? sourceInput.value : "").trim();
+    if (!sourceUrl) {
+      setStatus("Auto-scan paused: enter a PR/MR URL.");
+      return;
+    }
+    inFlight = true;
+    try {
+      const body = new URLSearchParams({
+        source_url: sourceUrl,
+        auto_cr: autoCrCheckbox && autoCrCheckbox.checked ? "1" : "0",
+      });
+      const response = await fetch(`/runs/${runId}/code-review/auto-scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        setStatus((data && data.error) || "Auto-scan failed.");
+        return;
+      }
+      setStatus(`Auto-scan OK - notes ${data.notes_count}, CI ${data.ci_count}.`);
+      if (data.notes_count !== currentNotes || data.ci_count !== currentCi) {
+        window.location.reload();
+        return;
+      }
+    } catch {
+      setStatus("Auto-scan temporarily unavailable.");
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  refresh();
+  const intervalId = window.setInterval(refresh, 45000);
+  window.addEventListener("beforeunload", () => window.clearInterval(intervalId), { once: true });
+}
+
 bindBusyButtons(document);
 initFollowLogs(document);
 initLiveLogsPolling(document);
 initWebIde(document);
+initCodeReviewAutoScan(document);
 document.addEventListener("htmx:afterSwap", (event) => {
   const root = event.target instanceof Element ? event.target : document;
   bindBusyButtons(root);
   initFollowLogs(document);
   initLiveLogsPolling(document);
   initWebIde(document);
+  initCodeReviewAutoScan(document);
   if (event.target && event.target.id === "run-interaction") {
     announce("Updated");
   }
