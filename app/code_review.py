@@ -162,19 +162,24 @@ def _scan_gitlab(source: ReviewSource, source_url: str) -> list[dict[str, Any]]:
 
 
 def _scan_github_ci(source: ReviewSource) -> list[dict[str, Any]]:
-    payload = _gh(["api", f"repos/{source.repo}/commits/pulls/{source.number}/check-runs"])
+    payload = _gh(["pr", "view", "--repo", source.repo, str(source.number), "--json", "statusCheckRollup"])
     data = json.loads(payload or "{}")
     jobs: list[dict[str, Any]] = []
-    for item in data.get("check_runs", []) or []:
+    for item in data.get("statusCheckRollup", []) or []:
+        name = str(item.get("name") or item.get("context") or "check")
+        status = str(item.get("status") or item.get("state") or "")
+        conclusion = str(item.get("conclusion") or "")
+        details_url = str(item.get("detailsUrl") or item.get("targetUrl") or "")
+        summary = str(item.get("message") or "")
         jobs.append(
             {
                 "provider": "github",
-                "name": str(item.get("name") or "check"),
-                "status": str(item.get("status") or ""),
-                "conclusion": str(item.get("conclusion") or ""),
-                "details_url": str(item.get("details_url") or ""),
-                "summary": str(((item.get("output") or {}).get("summary") or "")).strip(),
-                "text": str(((item.get("output") or {}).get("text") or "")).strip(),
+                "name": name,
+                "status": status,
+                "conclusion": conclusion,
+                "details_url": details_url,
+                "summary": summary.strip(),
+                "text": "",
             }
         )
     return jobs
@@ -220,7 +225,10 @@ def _post_gitlab_reply(source: ReviewSource, external_id: str, body: str) -> str
 def _gh(args: list[str]) -> str:
     proc = subprocess.run(["gh", *args], text=True, capture_output=True, check=False)
     if proc.returncode != 0:
-        raise CodeReviewError((proc.stderr or proc.stdout or "gh command failed").strip())
+        message = (proc.stderr or proc.stdout or "gh command failed").strip()
+        if "Not Found" in message:
+            raise CodeReviewError("GitHub resource not found. Check the PR URL and repository access.")
+        raise CodeReviewError(message)
     return proc.stdout.strip()
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -119,5 +120,36 @@ def seed_demo(db: Database) -> int:
     ]
     for note in notes:
         db.upsert_code_review_note(run_id, note)
+    db.set_state(f"review_source_url:{run_id}", "https://github.com/alonlot/Claude_worker/pull/101")
+    demo_ci_jobs = [
+        {
+            "provider": "github",
+            "name": "pytest",
+            "status": "completed",
+            "conclusion": "failure",
+            "details_url": "https://github.com/alonlot/Claude_worker/actions/runs/101001",
+            "summary": "2 tests failed in test_web.py around code-review auto-scan routes.",
+            "text": "AssertionError: expected 303 but got 400 when source_url is missing.",
+        },
+        {
+            "provider": "github",
+            "name": "ruff",
+            "status": "completed",
+            "conclusion": "success",
+            "details_url": "https://github.com/alonlot/Claude_worker/actions/runs/101002",
+            "summary": "Lint checks passed.",
+            "text": "",
+        },
+        {
+            "provider": "github",
+            "name": "build",
+            "status": "in_progress",
+            "conclusion": "",
+            "details_url": "https://github.com/alonlot/Claude_worker/actions/runs/101003",
+            "summary": "Building wheel and validating package metadata.",
+            "text": "",
+        },
+    ]
+    db.set_state(f"ci_jobs:{run_id}", json.dumps(demo_ci_jobs))
     db.add_notification("Demo run ready", f"Open run #{run_id} to inspect Push Preview and Code Review.", "info", run_id)
     return run_id
