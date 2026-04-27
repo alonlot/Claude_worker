@@ -5,6 +5,7 @@ import shutil
 import shlex
 import subprocess
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 
 from collections.abc import Awaitable
@@ -18,6 +19,7 @@ from app.config import Config, load_config_data, load_config_text, save_config_t
 from app.code_review import scan_review_notes, suggest_review_url
 from app.db import Database
 from app.runner import Worker
+from app.utils import ensure_child_path
 
 
 templates = Jinja2Templates(directory="app/templates")
@@ -361,6 +363,33 @@ def create_app(config: Config, db: Database) -> FastAPI:
         rows = db.fetchall("SELECT phase, line FROM logs WHERE run_id=? ORDER BY id", (run_id,))
         return "\n".join(f"[{row['phase']}] {row['line']}" for row in rows)
 
+    @app.get("/runs/{run_id}/workspace/files")
+    async def workspace_files(run_id: int):
+        run = db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+        return JSONResponse(list_workspace_files(run))
+
+    @app.get("/runs/{run_id}/workspace/file")
+    async def workspace_file(run_id: int, path: str = ""):
+        run = db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+        try:
+            file_path = safe_workspace_file(run, path)
+            if file_path.stat().st_size > 1_000_000:
+                return JSONResponse({"error": "File is too large to edit in the browser."}, status_code=400)
+            return JSONResponse({"path": path, "content": file_path.read_text(encoding="utf-8", errors="replace")})
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
+    @app.post("/runs/{run_id}/workspace/file")
+    async def save_workspace_file(run_id: int, path: str = Form(""), content: str = Form("")):
+        run = db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+        try:
+            file_path = safe_workspace_file(run, path)
+            file_path.write_text(content, encoding="utf-8", newline="\n")
+            db.add_log(run_id, "workspace", f"Saved {path} from Web IDE")
+            return JSONResponse({"ok": True, "path": path})
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
     @app.get("/partials/status", response_class=HTMLResponse)
     async def status_partial(request: Request):
         return templates.TemplateResponse(request, "_status.html", context(request, db, request.app.state.config))
@@ -677,6 +706,50 @@ def build_ide_url(run_id: int, run) -> str:
         )
     except (KeyError, ValueError):
         return ""
+
+
+def workspace_root(run) -> Path:
+    if not run or not run["workspace_path"]:
+        raise ValueError("Workspace is not available yet")
+    root = Path(run["workspace_path"])
+    if not root.exists() or not root.is_dir():
+        raise ValueError("Workspace folder does not exist")
+    return root
+
+
+def list_workspace_files(run) -> list[dict[str, str]]:
+    try:
+        root = workspace_root(run)
+    except ValueError:
+        return []
+    ignored_dirs = {".git", "node_modules", ".venv", "__pycache__", ".pytest_cache"}
+    files: list[dict[str, str]] = []
+    for path in root.rglob("*"):
+        if len(files) >= 300:
+            break
+        if any(part in ignored_dirs for part in path.parts):
+            continue
+        if not path.is_file():
+            continue
+        try:
+            if path.stat().st_size > 1_000_000:
+                continue
+        except OSError:
+            continue
+        rel = path.relative_to(root).as_posix()
+        files.append({"path": rel, "name": path.name})
+    return sorted(files, key=lambda item: item["path"].lower())
+
+
+def safe_workspace_file(run, relative_path: str) -> Path:
+    clean = (relative_path or "").strip().replace("\\", "/")
+    if not clean:
+        raise ValueError("Select a file first")
+    root = workspace_root(run)
+    path = ensure_child_path(root, root / clean)
+    if not path.exists() or not path.is_file():
+        raise ValueError("File does not exist in workspace")
+    return path
 
 
 async def run_connection_test(target: str, config: Config) -> str:

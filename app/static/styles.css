@@ -651,6 +651,92 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
   border-radius: 0;
   background: white;
 }
+.web-ide {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.32fr) minmax(0, 1fr);
+  min-height: 640px;
+  border-top: 1px solid #334155;
+  background: #0b1020;
+}
+.web-ide-files {
+  border-right: 1px solid #334155;
+  background: #0f172a;
+  min-width: 0;
+  overflow: hidden;
+}
+.web-ide-title {
+  padding: 10px 12px;
+  border-bottom: 1px solid #334155;
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.web-ide-file-list {
+  display: grid;
+  gap: 2px;
+  max-height: 594px;
+  overflow: auto;
+  padding: 8px;
+}
+.web-ide-file {
+  width: 100%;
+  border-radius: 6px;
+  background: transparent;
+  color: #d8e4ff;
+  padding: 7px 8px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.web-ide-file:hover {
+  background: #1e293b;
+}
+.web-ide-editor {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-width: 0;
+}
+.web-ide-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  border-bottom: 1px solid #334155;
+  padding: 7px 10px;
+  color: #d8e4ff;
+  font-size: 13px;
+  overflow: hidden;
+}
+.web-ide-toolbar span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#web-ide-content {
+  width: 100%;
+  min-height: 540px;
+  border: 0;
+  border-radius: 0;
+  resize: none;
+  background: #0a0f1f;
+  color: #d8e4ff;
+  padding: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.web-ide-status {
+  min-height: 32px;
+  border-top: 1px solid #334155;
+  padding: 8px 10px;
+  color: #91a0ba;
+  font-size: 12px;
+}
 .table-wrap {
   overflow: auto;
 }
@@ -974,6 +1060,9 @@ textarea:not(.compact) {
 @media (max-width: 880px) {
   .topbar, .hero-head, .execution-head { flex-direction: column; align-items: stretch; }
   .grid, .dashboard-grid, .work-grid, .settings-layout, .run-focus, .run-facts, .choice-grid, .workbench-meta, fieldset, .studio-grid, .setup-strip, .timeline li { grid-template-columns: 1fr; }
+  .web-ide { grid-template-columns: 1fr; }
+  .web-ide-files { border-right: 0; border-bottom: 1px solid #334155; }
+  .web-ide-file-list { max-height: 180px; }
   .queue li { grid-template-columns: 1fr; }
   .ide-embed { min-height: 460px; }
   .execution-studio .terminal,

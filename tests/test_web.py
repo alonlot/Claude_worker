@@ -232,6 +232,32 @@ def test_push_preview_and_code_review_pages_render(tmp_path):
     assert missing.status_code == 303
 
 
+def test_workspace_file_api(tmp_path):
+    config = Config()
+    config.app.database_path = str(tmp_path / "worker.sqlite3")
+    db = Database(config.app.database_path)
+    db.init()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "hello.txt").write_text("hello", encoding="utf-8")
+    db.upsert_ticket({"key": "A-1", "summary": "One", "status": "To Do", "eligibility": "eligible"})
+    run_id = db.create_run("A-1")
+    db.update_run(run_id, state="done", workspace_path=str(workspace))
+    app = create_app(config, db)
+    client = TestClient(app)
+
+    files = client.get(f"/runs/{run_id}/workspace/files")
+    assert files.status_code == 200
+    assert files.json()[0]["path"] == "hello.txt"
+    opened = client.get(f"/runs/{run_id}/workspace/file", params={"path": "hello.txt"})
+    assert opened.json()["content"] == "hello"
+    saved = client.post(f"/runs/{run_id}/workspace/file", data={"path": "hello.txt", "content": "updated"})
+    assert saved.status_code == 200
+    assert (workspace / "hello.txt").read_text(encoding="utf-8") == "updated"
+    outside = client.get(f"/runs/{run_id}/workspace/file", params={"path": "../secret.txt"})
+    assert outside.status_code == 400
+
+
 def test_cancel_mismatch_does_not_cancel_requested_run(tmp_path):
     config = Config()
     config.app.database_path = str(tmp_path / "worker.sqlite3")

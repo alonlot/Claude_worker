@@ -34,17 +34,21 @@
       </div>
       <iframe class="ide-embed" src="{{ ide_url }}"></iframe>
     {% else %}
-      <div class="ide-frame">
-        <div class="file-preview">
-          <div class="file-preview-bar">
-            <span></span><span></span><span></span>
+      <div class="web-ide" id="web-ide" data-run-id="{{ run.id }}">
+        <aside class="web-ide-files">
+          <div class="web-ide-title">Files</div>
+          <div class="web-ide-file-list" id="web-ide-file-list">
+            <span class="empty">Loading workspace...</span>
           </div>
-          <pre>workspace: {{ run.workspace_path or "pending" }}
-branch: {{ run.branch_name or "pending" }}
-
-Add ui.ide_url_template in raw YAML to embed code-server,
-a local file viewer, or another web IDE here.</pre>
-        </div>
+        </aside>
+        <section class="web-ide-editor">
+          <div class="web-ide-toolbar">
+            <span id="web-ide-current-file">No file selected</span>
+            <button class="tiny secondary" id="web-ide-save" type="button" disabled>Save</button>
+          </div>
+          <textarea id="web-ide-content" spellcheck="false" placeholder="Select a file from the workspace."></textarea>
+          <div class="web-ide-status" id="web-ide-status">Built-in Web IDE</div>
+        </section>
       </div>
     {% endif %}
     </section>

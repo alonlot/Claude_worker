@@ -178,14 +178,103 @@ function initLiveLogsPolling(root = document) {
   window.addEventListener("beforeunload", () => window.clearInterval(intervalId), { once: true });
 }
 
+function initWebIde(root = document) {
+  const ide = root.querySelector("#web-ide");
+  if (!ide || ide.dataset.ideBound === "1") return;
+  ide.dataset.ideBound = "1";
+  const runId = ide.dataset.runId;
+  const fileList = ide.querySelector("#web-ide-file-list");
+  const editor = ide.querySelector("#web-ide-content");
+  const current = ide.querySelector("#web-ide-current-file");
+  const save = ide.querySelector("#web-ide-save");
+  const status = ide.querySelector("#web-ide-status");
+  let activePath = "";
+
+  const setStatus = (message) => {
+    status.textContent = message;
+  };
+
+  const loadFile = async (path) => {
+    setStatus("Loading...");
+    const response = await fetch(`/runs/${runId}/workspace/file?path=${encodeURIComponent(path)}`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) {
+      setStatus(data.error || "Could not open file");
+      return;
+    }
+    activePath = data.path;
+    current.textContent = activePath;
+    editor.value = data.content || "";
+    save.disabled = false;
+    setStatus("Ready");
+  };
+
+  const loadFiles = async () => {
+    try {
+      const response = await fetch(`/runs/${runId}/workspace/files`, { cache: "no-store" });
+      const files = await response.json();
+      fileList.textContent = "";
+      if (!files.length) {
+        const empty = document.createElement("span");
+        empty.className = "empty";
+        empty.textContent = "No workspace files yet.";
+        fileList.appendChild(empty);
+        setStatus("Workspace unavailable");
+        return;
+      }
+      for (const file of files) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "web-ide-file";
+        button.textContent = file.path;
+        button.addEventListener("click", () => loadFile(file.path));
+        fileList.appendChild(button);
+      }
+      await loadFile(files[0].path);
+    } catch {
+      fileList.textContent = "";
+      const empty = document.createElement("span");
+      empty.className = "empty";
+      empty.textContent = "Could not load workspace.";
+      fileList.appendChild(empty);
+      setStatus("Workspace unavailable");
+    }
+  };
+
+  save.addEventListener("click", async () => {
+    if (!activePath) return;
+    save.disabled = true;
+    setStatus("Saving...");
+    const body = new URLSearchParams({ path: activePath, content: editor.value });
+    const response = await fetch(`/runs/${runId}/workspace/file`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    const data = await response.json();
+    save.disabled = false;
+    if (!response.ok) {
+      setStatus(data.error || "Save failed");
+      announce("Save failed");
+      return;
+    }
+    setStatus("Saved");
+    announce("File saved");
+  });
+
+  loadFiles();
+}
+
 bindBusyButtons(document);
 initFollowLogs(document);
 initLiveLogsPolling(document);
+initWebIde(document);
 document.addEventListener("htmx:afterSwap", (event) => {
   const root = event.target instanceof Element ? event.target : document;
   bindBusyButtons(root);
   initFollowLogs(document);
   initLiveLogsPolling(document);
+  initWebIde(document);
   if (event.target && event.target.id === "run-interaction") {
     announce("Updated");
   }

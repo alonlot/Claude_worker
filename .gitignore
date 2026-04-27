@@ -5,3 +5,4 @@ __pycache__/
 config.yaml
 data/
 workspaces/
+demo_workspaces/

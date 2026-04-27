@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from app.db import Database
 
 
 def seed_demo(db: Database) -> int:
     ticket_key = "DEMO-101"
+    workspace = Path("demo_workspaces") / ticket_key
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text(
+        "# Demo Workspace\n\nThis file is editable from the built-in Web IDE.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (workspace / "app_demo.py").write_text(
+        "def demo_message() -> str:\n    return \"Hello from the Web IDE\"\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     db.upsert_ticket(
         {
             "key": ticket_key,
@@ -25,7 +38,7 @@ def seed_demo(db: Database) -> int:
     db.enqueue(ticket_key)
     queue = db.fetchone("SELECT id FROM queue_items WHERE ticket_key=? ORDER BY id DESC LIMIT 1", (ticket_key,))
     if queue:
-        db.set_queue_state(int(queue["id"]), "plan_ready")
+        db.set_queue_state(int(queue["id"]), "done")
         db.upsert_ticket_plan(
             {
                 "ticket_key": ticket_key,
@@ -53,7 +66,7 @@ def seed_demo(db: Database) -> int:
         repo_url="git@github.com:alonlot/Claude_worker.git",
         base_branch="main",
         branch_name="DEMO-101/by_claude_polish_dashboard_empty_states",
-        workspace_path="workspaces/DEMO-101",
+        workspace_path=str(workspace),
         review_output="REVIEW_RESULT: pass\nNo actionable findings in this demo run.",
         commit_sha="demoabc1234567890",
         commit_message="DEMO-101: Polish dashboard empty states",
