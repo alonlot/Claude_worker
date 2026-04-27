@@ -179,10 +179,11 @@ body {
     "ide side"
     "terminal terminal";
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
 }
 .studio-ide {
   grid-area: ide;
+  min-height: clamp(620px, calc(100vh - 250px), 900px);
 }
 .studio-side {
   grid-area: side;
@@ -559,6 +560,9 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
   border-radius: 8px;
   overflow: hidden;
   background: #111827;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
 }
 .workbench-top {
   display: flex;
@@ -654,7 +658,8 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
 .web-ide {
   display: grid;
   grid-template-columns: minmax(180px, 0.32fr) minmax(0, 1fr);
-  min-height: 640px;
+  min-height: 100%;
+  height: 100%;
   border-top: 1px solid #334155;
   background: #0b1020;
 }
@@ -699,6 +704,7 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
   display: grid;
   grid-template-rows: auto 1fr auto;
   min-width: 0;
+  min-height: 0;
 }
 .tiny-check {
   font-size: 12px;
@@ -728,11 +734,11 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
 }
 #web-ide-content {
   width: 100%;
-  min-height: 540px;
+  min-height: 100%;
   border: 0;
   border-radius: 0;
   resize: none;
-  background: #0a0f1f;
+  background: #1e1e1e;
   color: #d8e4ff;
   padding: 14px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -740,11 +746,13 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
   line-height: 1.5;
 }
 #web-ide-editor-host {
-  min-height: 540px;
+  min-height: 0;
+  height: 100%;
+  background: #1e1e1e;
 }
 .web-ide-monaco {
-  min-height: 540px;
-  height: 540px;
+  min-height: 100%;
+  height: 100%;
 }
 .web-ide-status {
   min-height: 32px;

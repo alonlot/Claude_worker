@@ -248,6 +248,7 @@ function initWebIde(root = document) {
     if (!editorHost) return false;
     try {
       const monaco = await loadMonaco();
+      monaco.editor.setTheme("vs-dark");
       monacoCodeHost = document.createElement("div");
       monacoDiffHost = document.createElement("div");
       monacoCodeHost.className = "web-ide-monaco";
@@ -262,6 +263,7 @@ function initWebIde(root = document) {
         minimap: { enabled: false },
         scrollBeyondLastLine: false,
         fontSize: 13,
+        theme: "vs-dark",
       });
       monacoOriginalModel = monaco.editor.createModel("", "plaintext");
       monacoModifiedModel = monaco.editor.createModel("", "plaintext");
@@ -270,6 +272,7 @@ function initWebIde(root = document) {
         renderSideBySide: true,
         minimap: { enabled: false },
         readOnly: true,
+        theme: "vs-dark",
       });
       monacoDiffEditor.setModel({ original: monacoOriginalModel, modified: monacoModifiedModel });
       monacoDiffHost.style.display = "none";
