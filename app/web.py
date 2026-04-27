@@ -48,9 +48,16 @@ def create_app(config: Config, db: Database) -> FastAPI:
         if db.queue_paused():
             request.app.state.flash = "Queue is paused. Resume it before running tickets."
         else:
-            ready = db.fetchone("SELECT id FROM queue_items WHERE state='plan_ready' ORDER BY priority ASC, id ASC LIMIT 1")
+            ready = db.fetchone(
+                """
+                SELECT id FROM queue_items
+                WHERE state IN ('plan_ready', 'needs_plan', 'queued')
+                ORDER BY priority ASC, id ASC
+                LIMIT 1
+                """
+            )
             if not ready:
-                request.app.state.flash = "No planned ticket is ready. Ask Claude for a plan first."
+                request.app.state.flash = "No queued ticket is ready to build."
             else:
                 spawn_tracked_task(
                     worker.run_queue_item(int(ready["id"])),
@@ -119,8 +126,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
         if not item:
             request.app.state.flash = "Queue item not found."
             return RedirectResponse("/", status_code=303)
-        if item["state"] != "plan_ready":
-            request.app.state.flash = "Ask Claude for a plan before building this ticket."
+        if item["state"] not in ("needs_plan", "plan_ready", "queued"):
+            request.app.state.flash = "This queue item is not ready to build."
             return RedirectResponse("/", status_code=303)
         spawn_tracked_task(
             worker.run_queue_item(queue_id),

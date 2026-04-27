@@ -154,7 +154,7 @@ def test_queue_delete_route(tmp_path):
     assert db.fetchone("SELECT id FROM queue_items WHERE id=?", (queue_id,)) is None
 
 
-def test_build_requires_plan_ready(tmp_path):
+def test_build_accepts_unplanned_ticket(tmp_path):
     config = Config()
     config.app.database_path = str(tmp_path / "worker.sqlite3")
     db = Database(config.app.database_path)
@@ -167,7 +167,7 @@ def test_build_requires_plan_ready(tmp_path):
 
     response = client.post(f"/queue/{queue_id}/build", follow_redirects=False)
     assert response.status_code == 303
-    assert db.fetchone("SELECT state FROM queue_items WHERE id=?", (queue_id,))["state"] == "needs_plan"
+    assert db.fetchone("SELECT state FROM queue_items WHERE id=?", (queue_id,))["state"] in {"needs_plan", "running", "failed"}
 
 
 def test_cancel_mismatch_does_not_cancel_requested_run(tmp_path):

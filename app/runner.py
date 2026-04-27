@@ -90,7 +90,7 @@ class Worker:
             return None
         async with self.lock:
             item = self.db.queue_item(queue_id)
-            if not item or item["state"] not in ("plan_ready", "queued"):
+            if not item or item["state"] not in ("needs_plan", "plan_ready", "queued"):
                 return None
             return await self._run_queue_item(item)
 

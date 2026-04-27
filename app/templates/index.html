@@ -3,7 +3,7 @@
 <section class="actions">
   <form method="post" action="/jira/scan"><button>Scan Jira</button></form>
   <form method="post" action="/dry-run/enqueue"><button class="secondary">Add dry-run ticket</button></form>
-  <form method="post" action="/queue/run-once"><button data-loading-text="Starting build...">Build next planned</button></form>
+  <form method="post" action="/queue/run-once"><button data-loading-text="Starting build...">Build next</button></form>
   {% if current %}
   <a class="button-link secondary" href="/runs/{{ current.id }}">Open current ticket studio</a>
   {% endif %}
@@ -37,7 +37,7 @@
 <section class="grid">
   <div class="panel">
     <h2>Queue</h2>
-    <div class="start-drop" id="start-drop">Drag a planned ticket here to build it now</div>
+    <div class="start-drop" id="start-drop">Drag any queued ticket here to build it now</div>
     <ol class="queue" id="queue-list">
       {% for item in queue %}
         <li draggable="true" data-id="{{ item.id }}" data-state="{{ item.state }}">
@@ -59,7 +59,7 @@
               <button class="tiny secondary" data-loading-text="Revising...">Revise plan</button>
             </form>
             {% else %}
-            <small>Ask Claude to explain the mission before building.</small>
+            <small>Optional: ask Claude for a mission plan before building.</small>
             {% endif %}
           </div>
           <div class="queue-actions">
@@ -67,8 +67,8 @@
             {% if item.state in ["needs_plan", "failed"] %}
             <form method="post" action="/queue/{{ item.id }}/prepare"><button class="tiny" data-loading-text="Planning...">Ask Claude</button></form>
             {% endif %}
-            {% if item.state == "plan_ready" %}
-            <form method="post" action="/queue/{{ item.id }}/build"><button class="tiny" data-loading-text="Starting...">Build</button></form>
+            {% if item.state in ["needs_plan", "plan_ready", "queued"] %}
+            <form method="post" action="/queue/{{ item.id }}/build"><button class="tiny" data-loading-text="Starting...">Build now</button></form>
             {% endif %}
             {% if item.state != "running" %}
             <form method="post" action="/queue/{{ item.id }}/delete"><button class="tiny secondary">Remove</button></form>

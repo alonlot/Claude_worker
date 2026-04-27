@@ -35,8 +35,8 @@ if (startDrop) {
     event.preventDefault();
     startDrop.classList.remove("active");
     if (!dragged || !dragged.dataset.id) return;
-    if (dragged.dataset.state !== "plan_ready") {
-      announce("Ask Claude for a plan first");
+    if (!["needs_plan", "plan_ready", "queued"].includes(dragged.dataset.state)) {
+      announce("This ticket is not ready to build");
       return;
     }
     try {
