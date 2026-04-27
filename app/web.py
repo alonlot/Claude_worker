@@ -10,7 +10,7 @@ from urllib.parse import quote
 from collections.abc import Awaitable
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -185,20 +185,23 @@ def create_app(config: Config, db: Database) -> FastAPI:
         return templates.TemplateResponse(request, "run_detail.html", detail)
 
     @app.post("/runs/{run_id}/input")
-    async def add_run_input(run_id: int, message: str = Form(...)):
+    async def add_run_input(request: Request, run_id: int, message: str = Form(...)):
         clean = message.strip()
         if clean:
             db.add_agent_input(run_id, clean)
             db.add_log(run_id, "user", clean)
+        if is_htmx(request):
+            return templates.TemplateResponse(request, "_run_interaction.html", run_interaction_context(db, run_id))
         return RedirectResponse(f"/runs/{run_id}", status_code=303)
 
     @app.post("/agent-questions/{question_id}/answer")
     async def answer_agent_question(
+        request: Request,
         question_id: int,
         run_id: int = Form(...),
         selected_answer: str = Form(""),
         free_answer: str = Form(""),
-    ):
+    ) -> Response:
         free_answer = free_answer.strip()
         selected_answer = selected_answer.strip()
         answer = free_answer or selected_answer
@@ -206,6 +209,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
         if answer:
             db.answer_agent_question(question_id, answer, source)
             db.add_log(run_id, "user", f"Answered question #{question_id}: {answer}")
+        if is_htmx(request):
+            return templates.TemplateResponse(request, "_run_interaction.html", run_interaction_context(db, run_id))
         return RedirectResponse(f"/runs/{run_id}", status_code=303)
 
     @app.get("/runs/{run_id}/logs", response_class=PlainTextResponse)
@@ -426,7 +431,7 @@ def _real_value(value: str, placeholders: list[str]) -> bool:
 def run_detail_context(request: Request, db: Database, config: Config, run_id: int) -> dict:
     run = db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
     ticket = db.fetchone("SELECT * FROM tickets WHERE key=?", (run["ticket_key"],)) if run else None
-    return {
+    data = {
         "request": request,
         "title": config.ui.title,
         "flash": pop_flash(request),
@@ -442,6 +447,21 @@ def run_detail_context(request: Request, db: Database, config: Config, run_id: i
         "sub_agents": db.fetchall("SELECT * FROM sub_agents WHERE run_id=? ORDER BY updated_at DESC", (run_id,)),
         "ide_url": build_ide_url(run_id, run),
     }
+    return data
+
+
+def run_interaction_context(db: Database, run_id: int) -> dict:
+    run = db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+    return {
+        "run": run,
+        "questions": db.fetchall("SELECT * FROM agent_questions WHERE run_id=? ORDER BY id DESC", (run_id,)),
+        "agent_inputs": db.fetchall("SELECT * FROM agent_inputs WHERE run_id=? ORDER BY id DESC", (run_id,)),
+        "sub_agents": db.fetchall("SELECT * FROM sub_agents WHERE run_id=? ORDER BY updated_at DESC", (run_id,)),
+    }
+
+
+def is_htmx(request: Request) -> bool:
+    return request.headers.get("HX-Request", "").lower() == "true"
 
 
 def pop_flash(request: Request) -> str:

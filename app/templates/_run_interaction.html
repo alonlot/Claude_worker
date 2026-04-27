@@ -1,0 +1,105 @@
+<section class="studio-side" id="run-interaction">
+  <section class="studio-message">
+    {% set ns = namespace(has_pending_question=false) %}
+    {% for question in questions %}
+      {% if question.state == "pending" %}
+        {% set ns.has_pending_question = true %}
+      {% endif %}
+    {% endfor %}
+
+    {% if ns.has_pending_question %}
+    <h3>Agent Questions</h3>
+    <div class="question-list">
+      {% for question in questions %}
+        {% if question.state == "pending" %}
+        <article class="question-card question-pending">
+          <div class="question-card-head">
+            <div>
+              <span class="eyebrow">{{ question.agent_name }} asks</span>
+              <h3>{{ question.question }}</h3>
+            </div>
+            <span class="pill warn">{{ question.state }}</span>
+          </div>
+          <form
+            method="post"
+            action="/agent-questions/{{ question.id }}/answer"
+            class="question-form async-form"
+            hx-post="/agent-questions/{{ question.id }}/answer"
+            hx-target="#run-interaction"
+            hx-swap="outerHTML"
+          >
+            <input type="hidden" name="run_id" value="{{ run.id }}">
+            <div class="choice-grid">
+              <label class="choice-card">
+                <input type="radio" name="selected_answer" value="{{ question.option_a }}">
+                <span>A</span>
+                <strong>{{ question.option_a }}</strong>
+              </label>
+              <label class="choice-card">
+                <input type="radio" name="selected_answer" value="{{ question.option_b }}">
+                <span>B</span>
+                <strong>{{ question.option_b }}</strong>
+              </label>
+              <label class="choice-card">
+                <input type="radio" name="selected_answer" value="{{ question.option_c }}">
+                <span>C</span>
+                <strong>{{ question.option_c }}</strong>
+              </label>
+            </div>
+            {% if question.free_input_enabled %}
+            <label class="free-answer">Custom answer
+              <input name="free_answer" placeholder="Type a custom answer">
+            </label>
+            {% endif %}
+            <button data-loading-text="Submitting...">Submit answer</button>
+          </form>
+        </article>
+        {% endif %}
+      {% endfor %}
+    </div>
+    {% else %}
+    <h3>Message During Run</h3>
+    <form
+      method="post"
+      action="/runs/{{ run.id }}/input"
+      class="stack async-form"
+      hx-post="/runs/{{ run.id }}/input"
+      hx-target="#run-interaction"
+      hx-swap="outerHTML"
+    >
+      <label>Send guidance to the active agent
+        <textarea class="compact message-box" name="message" placeholder="Add guidance, answer context, or correction for the active agent."></textarea>
+      </label>
+      <button data-loading-text="Sending...">Send to agent</button>
+    </form>
+    <div class="list compact-list">
+      {% for item in agent_inputs %}
+      <article>
+        <strong>User input #{{ item.id }}</strong>
+        <span>{{ item.message }}</span>
+        <small>{% if item.consumed %}consumed{% else %}waiting for worker{% endif %} - {{ item.created_at }}</small>
+      </article>
+      {% else %}
+      <p class="empty">No mid-run input yet.</p>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+  <section class="studio-message">
+    <h3>Sub Agents</h3>
+    <div class="list compact-list">
+      {% for agent in sub_agents %}
+      <article>
+        <div class="ticket-focus-head">
+          <strong>{{ agent.name }}</strong>
+          <span class="pill">{{ agent.status }} {{ agent.progress }}%</span>
+        </div>
+        <span>{{ agent.task }}</span>
+        {% if agent.summary %}<small>{{ agent.summary }}</small>{% endif %}
+      </article>
+      {% else %}
+      <p class="empty">No sub-agents reported yet.</p>
+      {% endfor %}
+    </div>
+  </section>
+</section>

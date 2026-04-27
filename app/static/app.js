@@ -63,6 +63,31 @@ function bindBusyButtons(root = document) {
   }
 }
 
+function restoreBusyForm(form) {
+  if (!form || form.dataset.submitting !== "1") return;
+  const submitter = form.querySelector('button[type="submit"], button:not([type])');
+  if (submitter && submitter.dataset.originalText) {
+    submitter.textContent = submitter.dataset.originalText;
+    submitter.disabled = false;
+  }
+  form.dataset.submitting = "0";
+}
+
+function announce(message) {
+  let toast = document.querySelector("#toast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "toast";
+    toast.className = "toast";
+    toast.setAttribute("role", "status");
+    document.body.appendChild(toast);
+  }
+  toast.textContent = message;
+  toast.classList.add("show");
+  window.clearTimeout(announce.timeoutId);
+  announce.timeoutId = window.setTimeout(() => toast.classList.remove("show"), 2200);
+}
+
 function initFollowLogs(root = document) {
   const terminal = root.querySelector("#live-logs-terminal");
   const toggle = root.querySelector("#follow-logs-toggle");
@@ -132,4 +157,17 @@ document.addEventListener("htmx:afterSwap", (event) => {
   bindBusyButtons(root);
   initFollowLogs(document);
   initLiveLogsPolling(document);
+  if (event.target && event.target.id === "run-interaction") {
+    announce("Updated");
+  }
+});
+
+document.addEventListener("htmx:responseError", (event) => {
+  restoreBusyForm(event.target);
+  announce("Request failed");
+});
+
+document.addEventListener("htmx:sendError", (event) => {
+  restoreBusyForm(event.target);
+  announce("Network error");
 });
