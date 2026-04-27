@@ -197,6 +197,9 @@ def test_push_preview_and_code_review_pages_render(tmp_path):
     assert cr.status_code == 200
     assert "Code Review" in cr.text
 
+    missing = client.post(f"/runs/{run_id}/code-review/scan", data={}, follow_redirects=False)
+    assert missing.status_code == 303
+
 
 def test_cancel_mismatch_does_not_cancel_requested_run(tmp_path):
     config = Config()

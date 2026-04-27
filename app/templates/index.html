@@ -79,13 +79,15 @@
         <li class="empty">No queued tickets.</li>
       {% endfor %}
     </ol>
-    <form method="post" action="/queue/reorder">
-      <input type="hidden" name="order" id="queue-order">
-      <button class="secondary" type="submit">Save order</button>
-    </form>
-    <form method="post" action="/queue/clear-finished">
-      <button class="secondary" type="submit">Clear finished queue items</button>
-    </form>
+    <div class="queue-tools">
+      <form method="post" action="/queue/reorder">
+        <input type="hidden" name="order" id="queue-order">
+        <button class="secondary" type="submit">Save order</button>
+      </form>
+      <form method="post" action="/queue/clear-finished">
+        <button class="secondary" type="submit">Clear finished queue items</button>
+      </form>
+    </div>
   </div>
 
   <div class="panel">

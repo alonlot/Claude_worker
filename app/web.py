@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import Config, load_config_data, load_config_text, save_config_text, write_config_data
-from app.code_review import scan_review_notes
+from app.code_review import scan_review_notes, suggest_review_url
 from app.db import Database
 from app.runner import Worker
 
@@ -240,13 +240,18 @@ def create_app(config: Config, db: Database) -> FastAPI:
             return RedirectResponse("/", status_code=303)
         detail["review_notes"] = db.code_review_notes(run_id)
         detail["auto_cr"] = db.get_state(f"auto_cr:{run_id}", "0") == "1"
+        detail["suggested_review_url"] = suggest_review_url(detail["run"]["repo_url"], detail["run"]["branch_name"])
         return templates.TemplateResponse(request, "code_review.html", detail)
 
     @app.post("/runs/{run_id}/code-review/scan")
-    async def scan_code_review(run_id: int, request: Request, source_url: str = Form(...), auto_cr: str | None = Form(None)):
+    async def scan_code_review(run_id: int, request: Request, source_url: str = Form(""), auto_cr: str | None = Form(None)):
         try:
+            source_url = source_url.strip()
+            if not source_url:
+                request.app.state.flash = "Paste a pull request or merge request URL before scanning."
+                return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
             db.set_state(f"auto_cr:{run_id}", "1" if auto_cr == "on" else "0")
-            notes = scan_review_notes(source_url.strip())
+            notes = scan_review_notes(source_url)
             for note in notes:
                 db.upsert_code_review_note(run_id, note)
             request.app.state.flash = f"Scanned {len(notes)} code review note(s)."

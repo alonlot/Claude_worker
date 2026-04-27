@@ -1,6 +1,6 @@
 import pytest
 
-from app.code_review import CodeReviewError, parse_review_url
+from app.code_review import CodeReviewError, _repo_slug, parse_review_url
 
 
 def test_parse_github_pr_url():
@@ -20,3 +20,8 @@ def test_parse_gitlab_mr_url():
 def test_parse_unknown_review_url_fails():
     with pytest.raises(CodeReviewError):
         parse_review_url("https://example.com/review/1")
+
+
+def test_repo_slug_from_git_urls():
+    assert _repo_slug("git@github.com:alonlot/Claude_worker.git") == "alonlot/Claude_worker"
+    assert _repo_slug("https://gitlab.com/group/project.git") == "group/project"

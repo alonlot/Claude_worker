@@ -13,8 +13,13 @@
     <fieldset>
       <legend>Scan Review</legend>
       <label class="wide">Pull request / merge request URL
-        <input name="source_url" placeholder="https://github.com/owner/repo/pull/123">
+        <input name="source_url" value="{{ suggested_review_url }}" placeholder="https://github.com/owner/repo/pull/123">
       </label>
+      {% if suggested_review_url %}
+      <p class="form-hint wide">Auto-detected from this run branch. You can replace it before scanning.</p>
+      {% else %}
+      <p class="form-hint wide">No PR/MR was auto-detected. Paste a URL to scan review notes.</p>
+      {% endif %}
       <label class="check">
         <input type="checkbox" name="auto_cr" {% if auto_cr %}checked{% endif %}>
         Auto CR after scan

@@ -21,6 +21,33 @@ class ReviewSource:
     number: int
 
 
+def suggest_review_url(repo_url: str, branch_name: str) -> str:
+    repo = _repo_slug(repo_url)
+    if not repo or not branch_name:
+        return ""
+    if "github.com" in repo_url:
+        try:
+            data = json.loads(
+                _gh(["pr", "list", "--repo", repo, "--head", branch_name, "--state", "open", "--json", "url", "--limit", "1"])
+                or "[]"
+            )
+            if data:
+                return str(data[0].get("url") or "")
+        except Exception:
+            return ""
+    if "gitlab.com" in repo_url:
+        try:
+            data = _gitlab_json(
+                f"/projects/{quote(repo, safe='')}/merge_requests?source_branch={quote(branch_name, safe='')}&state=opened"
+            )
+            if data:
+                web_url = data[0].get("web_url")
+                return str(web_url or "")
+        except Exception:
+            return ""
+    return ""
+
+
 def parse_review_url(url: str) -> ReviewSource:
     github = re.search(r"github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)", url)
     if github:
@@ -142,6 +169,17 @@ def _gh(args: list[str]) -> str:
     if proc.returncode != 0:
         raise CodeReviewError((proc.stderr or proc.stdout or "gh command failed").strip())
     return proc.stdout.strip()
+
+
+def _repo_slug(repo_url: str) -> str:
+    clean = repo_url.strip()
+    github = re.search(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?$", clean)
+    if github:
+        return github.group(1).removesuffix(".git")
+    gitlab = re.search(r"gitlab\.com[:/]([^?\s]+?)(?:\.git)?$", clean)
+    if gitlab:
+        return gitlab.group(1).removesuffix(".git")
+    return ""
 
 
 def _gitlab_json(path: str, method: str = "GET", form: dict[str, str] | None = None) -> Any:
