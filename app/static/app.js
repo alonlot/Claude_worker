@@ -1,56 +1,58 @@
-const list = document.querySelector("#queue-list");
-const orderInput = document.querySelector("#queue-order");
-const startDrop = document.querySelector("#start-drop");
 let dragged = null;
 
-function syncOrder() {
-  if (!list || !orderInput) return;
-  orderInput.value = [...list.querySelectorAll("[data-id]")].map((el) => el.dataset.id).join(",");
-}
-
-if (list) {
-  list.addEventListener("dragstart", (event) => {
-    dragged = event.target.closest("[data-id]");
-  });
-  list.addEventListener("dragover", (event) => {
-    event.preventDefault();
-    const target = event.target.closest("[data-id]");
-    if (!dragged || !target || dragged === target) return;
-    const box = target.getBoundingClientRect();
-    const after = event.clientY > box.top + box.height / 2;
-    target.parentNode.insertBefore(dragged, after ? target.nextSibling : target);
+function initDashboardQueue(root = document) {
+  const list = root.querySelector("#queue-list");
+  const orderInput = root.querySelector("#queue-order");
+  const startDrop = root.querySelector("#start-drop");
+  if (list && list.dataset.dragBound !== "1") {
+    list.dataset.dragBound = "1";
+    const syncOrder = () => {
+      if (!orderInput) return;
+      orderInput.value = [...list.querySelectorAll("[data-id]")].map((el) => el.dataset.id).join(",");
+    };
+    list.addEventListener("dragstart", (event) => {
+      dragged = event.target.closest("[data-id]");
+    });
+    list.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      const target = event.target.closest("[data-id]");
+      if (!dragged || !target || dragged === target) return;
+      const box = target.getBoundingClientRect();
+      const after = event.clientY > box.top + box.height / 2;
+      target.parentNode.insertBefore(dragged, after ? target.nextSibling : target);
+      syncOrder();
+    });
+    list.addEventListener("drop", syncOrder);
     syncOrder();
-  });
-  list.addEventListener("drop", syncOrder);
-  syncOrder();
-}
+  }
 
-if (startDrop) {
-  startDrop.addEventListener("dragover", (event) => {
-    event.preventDefault();
-    startDrop.classList.add("active");
-  });
-  startDrop.addEventListener("dragleave", () => startDrop.classList.remove("active"));
-  startDrop.addEventListener("drop", async (event) => {
-    event.preventDefault();
-    startDrop.classList.remove("active");
-    if (!dragged || !dragged.dataset.id) return;
-    if (!["needs_plan", "plan_ready", "queued"].includes(dragged.dataset.state)) {
-      announce("This ticket is not ready to build");
-      return;
-    }
-    try {
-      const response = await fetch(`/queue/${dragged.dataset.id}/build`, { method: "POST" });
-      if (response.ok) {
-        announce("Build started");
-        window.setTimeout(() => window.location.reload(), 350);
-      } else {
-        announce("Could not start build");
+  if (startDrop && startDrop.dataset.dropBound !== "1") {
+    startDrop.dataset.dropBound = "1";
+    startDrop.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      startDrop.classList.add("active");
+    });
+    startDrop.addEventListener("dragleave", () => startDrop.classList.remove("active"));
+    startDrop.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      startDrop.classList.remove("active");
+      if (!dragged || !dragged.dataset.id) return;
+      if (!["needs_plan", "plan_ready", "queued"].includes(dragged.dataset.state)) {
+        announce("This ticket is not ready to build");
+        return;
       }
-    } catch {
-      announce("Network error");
-    }
-  });
+      try {
+        const response = await fetch(`/queue/${dragged.dataset.id}/build`, { method: "POST" });
+        if (response.ok) {
+          announce("Build started");
+        } else {
+          announce("Could not start build");
+        }
+      } catch {
+        announce("Network error");
+      }
+    });
+  }
 }
 
 async function pollNotifications() {
@@ -520,6 +522,7 @@ function initCodeReviewAutoScan(root = document) {
 }
 
 bindBusyButtons(document);
+initDashboardQueue(document);
 initFollowLogs(document);
 initLiveLogsPolling(document);
 initWebIde(document);
@@ -527,6 +530,7 @@ initCodeReviewAutoScan(document);
 document.addEventListener("htmx:afterSwap", (event) => {
   const root = event.target instanceof Element ? event.target : document;
   bindBusyButtons(root);
+  initDashboardQueue(document);
   initFollowLogs(document);
   initLiveLogsPolling(document);
   initWebIde(document);

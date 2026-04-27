@@ -107,6 +107,9 @@ def test_queue_pause_and_notifications_routes(tmp_path):
     assert notes.status_code == 200
     assert notes.json()[0]["title"] == "Done"
     assert db.unread_notifications() == []
+    dashboard = client.get("/partials/dashboard")
+    assert dashboard.status_code == 200
+    assert "Queue" in dashboard.text
 
 
 def test_enqueue_test_ticket_route(tmp_path):

@@ -496,6 +496,10 @@ def create_app(config: Config, db: Database) -> FastAPI:
     async def status_partial(request: Request):
         return templates.TemplateResponse(request, "_status.html", context(request, db, request.app.state.config))
 
+    @app.get("/partials/dashboard", response_class=HTMLResponse)
+    async def dashboard_partial(request: Request):
+        return templates.TemplateResponse(request, "_dashboard_live.html", context(request, db, request.app.state.config))
+
     @app.get("/settings", response_class=HTMLResponse)
     async def settings(request: Request):
         active_config = request.app.state.config
