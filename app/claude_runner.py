@@ -140,7 +140,12 @@ def review_prompt(ticket: dict[str, str]) -> str:
 Review the completed work for Jira ticket {ticket['key']}.
 Look for bugs, missing tests, regressions, and incomplete requirements.
 Do not run git commands.
-Return a concise review with findings first. If there are no findings, say so clearly.
+Start the response with exactly one marker line:
+REVIEW_RESULT: pass
+or
+REVIEW_RESULT: needs_fix
+Use pass only when there are no actionable findings.
+After the marker, return a concise review with findings first. If there are no findings, say so clearly.
 """
 
 

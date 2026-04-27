@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import shlex
 import subprocess
+from datetime import datetime
 from urllib.parse import quote
 
 from collections.abc import Awaitable
@@ -93,6 +95,28 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.post("/tickets/{ticket_key}/rerun")
     async def rerun_ticket(ticket_key: str):
         worker.rerun_ticket(ticket_key)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/dry-run/enqueue")
+    async def enqueue_test_ticket(request: Request):
+        ticket_key = "LOCAL-" + datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        db.upsert_ticket(
+            {
+                "key": ticket_key,
+                "summary": "Local dry-run ticket",
+                "status": "To Do",
+                "url": "",
+                "description": (
+                    "Dry-run ticket created from the dashboard. Use this to verify the Git and Claude "
+                    "worker flow without connecting Jira."
+                ),
+                "labels": ["dry-run", "local"],
+                "eligibility": "eligible",
+                "skip_reason": "",
+            }
+        )
+        db.enqueue(ticket_key)
+        request.app.state.flash = f"Created dry-run ticket {ticket_key}."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/runs/{run_id}/cancel")
@@ -361,7 +385,42 @@ def context(request: Request, db: Database, config: Config) -> dict:
         "notifications": db.fetchall("SELECT * FROM notifications ORDER BY id DESC LIMIT 10"),
         "allow_cr_fix": config.claude.allow_cr_fix,
         "interval_running": bool(request.app.state.worker.interval_task and not request.app.state.worker.interval_task.done()),
+        "setup_status": setup_status(config),
     }
+
+
+def setup_status(config: Config) -> list[dict[str, str | bool]]:
+    try:
+        claude_command = shlex.split(config.claude.command)[0] if config.claude.command.strip() else ""
+    except ValueError:
+        claude_command = ""
+    jira_ready = (
+        _real_value(config.jira.url, ["your-domain.atlassian.net"])
+        and _real_value(config.jira.email, ["you@example.com"])
+        and _real_value(config.jira.token, ["paste-jira-token-here"])
+    )
+    return [
+        {
+            "name": "Jira",
+            "ok": jira_ready,
+            "detail": "Configured" if jira_ready else "Missing real URL, email, or token",
+        },
+        {
+            "name": "Git",
+            "ok": bool(shutil.which("git") and config.git.default_repo_url),
+            "detail": config.git.default_repo_url or "Missing git.default_repo_url",
+        },
+        {
+            "name": "Claude",
+            "ok": bool(claude_command and shutil.which(claude_command)),
+            "detail": claude_command or "Missing claude.command",
+        },
+    ]
+
+
+def _real_value(value: str, placeholders: list[str]) -> bool:
+    clean = (value or "").strip().lower()
+    return bool(clean) and all(placeholder not in clean for placeholder in placeholders)
 
 
 def run_detail_context(request: Request, db: Database, config: Config, run_id: int) -> dict:

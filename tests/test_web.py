@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Config
 from app.db import Database
-from app.web import create_app, spawn_tracked_task, split_lines
+from app.web import create_app, spawn_tracked_task, setup_status, split_lines
 
 
 def test_split_lines_accepts_lines_and_commas():
@@ -69,6 +69,35 @@ def test_queue_pause_and_notifications_routes(tmp_path):
     assert notes.status_code == 200
     assert notes.json()[0]["title"] == "Done"
     assert db.unread_notifications() == []
+
+
+def test_enqueue_test_ticket_route(tmp_path):
+    config = Config()
+    config.app.database_path = str(tmp_path / "worker.sqlite3")
+    db = Database(config.app.database_path)
+    db.init()
+    app = create_app(config, db)
+    client = TestClient(app)
+
+    response = client.post("/dry-run/enqueue", follow_redirects=False)
+    assert response.status_code == 303
+    ticket = db.fetchone("SELECT * FROM tickets WHERE key LIKE 'LOCAL-%'")
+    assert ticket is not None
+    assert ticket["eligibility"] == "eligible"
+    queue_item = db.fetchone("SELECT * FROM queue_items WHERE ticket_key=?", (ticket["key"],))
+    assert queue_item is not None
+
+
+def test_setup_status_flags_missing_config():
+    config = Config()
+    config.jira.url = "https://your-domain.atlassian.net"
+    config.jira.email = "you@example.com"
+    config.jira.token = "paste-jira-token-here"
+    rows = setup_status(config)
+    by_name = {row["name"]: row for row in rows}
+    assert by_name["Jira"]["ok"] is False
+    assert by_name["Git"]["ok"] is False
+    assert "Claude" in by_name
 
 
 def test_cancel_mismatch_does_not_cancel_requested_run(tmp_path):
