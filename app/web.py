@@ -19,6 +19,7 @@ from fastapi.templating import Jinja2Templates
 from app.config import Config, load_config_data, load_config_text, save_config_text, write_config_data
 from app.code_review import scan_ci_jobs, scan_review_notes, suggest_review_url
 from app.db import Database
+from app.demo import demo_ci_jobs_for_display
 from app.runner import Worker
 from app.utils import ensure_child_path
 
@@ -36,6 +37,43 @@ def create_app(config: Config, db: Database) -> FastAPI:
     recovered = db.recover_interrupted_work()
     if recovered:
         app.state.flash = f"Recovered {recovered} interrupted run(s) as failed after restart."
+
+    def do_code_review_scan(run_id: int, source_url: str, auto_cr_on: bool, scan_mode: str) -> str:
+        """Returns a flash message. scan_mode is notes, ci, or both."""
+        source_url = source_url.strip()
+        if not source_url:
+            return "Paste a pull request or merge request URL before scanning."
+        mode = scan_mode if scan_mode in ("notes", "ci", "both") else "both"
+        db.set_state(f"review_source_url:{run_id}", source_url)
+        db.set_state(f"auto_cr:{run_id}", "1" if auto_cr_on else "0")
+        try:
+            notes: list = []
+            ci_jobs: list = []
+            if mode in ("notes", "both"):
+                notes = scan_review_notes(source_url)
+                for note in notes:
+                    db.upsert_code_review_note(run_id, note)
+            if mode in ("ci", "both"):
+                ci_jobs = scan_ci_jobs(source_url)
+                db.set_state(f"ci_jobs:{run_id}", json.dumps(ci_jobs))
+            if mode == "notes":
+                flash = f"Scanned {len(notes)} code review note(s)."
+            elif mode == "ci":
+                flash = f"Scanned {len(ci_jobs)} CI job(s)."
+            else:
+                flash = f"Scanned {len(notes)} code review note(s) and {len(ci_jobs)} CI job(s)."
+            if auto_cr_on and notes and mode in ("notes", "both"):
+                ci_ctx = render_ci_context(parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", "")))
+                spawn_tracked_task(
+                    worker.run_external_code_review_fix(run_id, ci_context=ci_ctx),
+                    db,
+                    title="Auto CR failed",
+                    message=f"Auto code-review fix crashed for run #{run_id}.",
+                    run_id=run_id,
+                )
+            return flash
+        except Exception as exc:
+            return f"Scan failed: {exc}"
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
@@ -261,7 +299,10 @@ def create_app(config: Config, db: Database) -> FastAPI:
             return RedirectResponse("/", status_code=303)
         detail["review_notes"] = db.code_review_notes(run_id)
         detail["auto_cr"] = db.get_state(f"auto_cr:{run_id}", "0") == "1"
-        detail["ci_jobs"] = parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", ""))
+        ci_jobs = parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", ""))
+        if not ci_jobs and detail["run"]["ticket_key"] == "DEMO-101":
+            ci_jobs = demo_ci_jobs_for_display()
+        detail["ci_jobs"] = ci_jobs
         saved_source_url = db.get_state(f"review_source_url:{run_id}", "")
         detail["suggested_review_url"] = saved_source_url or suggest_review_url(
             detail["run"]["repo_url"], detail["run"]["branch_name"]
@@ -269,71 +310,29 @@ def create_app(config: Config, db: Database) -> FastAPI:
         return templates.TemplateResponse(request, "code_review.html", detail)
 
     @app.post("/runs/{run_id}/code-review/scan")
-    async def scan_code_review(run_id: int, request: Request, source_url: str = Form(""), auto_cr: str | None = Form(None)):
-        try:
-            source_url = source_url.strip()
-            if not source_url:
-                request.app.state.flash = "Paste a pull request or merge request URL before scanning."
-                return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
-            db.set_state(f"review_source_url:{run_id}", source_url)
-            db.set_state(f"auto_cr:{run_id}", "1" if auto_cr == "on" else "0")
-            notes = scan_review_notes(source_url)
-            for note in notes:
-                db.upsert_code_review_note(run_id, note)
-            ci_jobs = scan_ci_jobs(source_url)
-            db.set_state(f"ci_jobs:{run_id}", json.dumps(ci_jobs))
-            request.app.state.flash = f"Scanned {len(notes)} code review note(s)."
-            if auto_cr == "on" and notes:
-                spawn_tracked_task(
-                    worker.run_external_code_review_fix(run_id, ci_context=render_ci_context(ci_jobs)),
-                    db,
-                    title="Auto CR failed",
-                    message=f"Auto code-review fix crashed for run #{run_id}.",
-                    run_id=run_id,
-                )
-        except Exception as exc:
-            request.app.state.flash = f"Code review scan failed: {exc}"
+    async def scan_code_review(
+        run_id: int,
+        request: Request,
+        source_url: str = Form(""),
+        auto_cr: str | None = Form(None),
+        scan_mode: str = Form("both"),
+    ):
+        request.app.state.flash = do_code_review_scan(
+            run_id,
+            source_url,
+            auto_cr == "on",
+            scan_mode,
+        )
         return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 
     @app.post("/runs/{run_id}/code-review/scan-notes")
     async def scan_code_review_notes_only(run_id: int, request: Request, source_url: str = Form(""), auto_cr: str | None = Form(None)):
-        try:
-            source_url = source_url.strip()
-            if not source_url:
-                request.app.state.flash = "Paste a pull request or merge request URL before scanning."
-                return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
-            db.set_state(f"review_source_url:{run_id}", source_url)
-            db.set_state(f"auto_cr:{run_id}", "1" if auto_cr == "on" else "0")
-            notes = scan_review_notes(source_url)
-            for note in notes:
-                db.upsert_code_review_note(run_id, note)
-            request.app.state.flash = f"Scanned {len(notes)} code review note(s)."
-            if auto_cr == "on" and notes:
-                ci_jobs = parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", ""))
-                spawn_tracked_task(
-                    worker.run_external_code_review_fix(run_id, ci_context=render_ci_context(ci_jobs)),
-                    db,
-                    title="Auto CR failed",
-                    message=f"Auto code-review fix crashed for run #{run_id}.",
-                    run_id=run_id,
-                )
-        except Exception as exc:
-            request.app.state.flash = f"Code review scan failed: {exc}"
+        request.app.state.flash = do_code_review_scan(run_id, source_url, auto_cr == "on", "notes")
         return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 
     @app.post("/runs/{run_id}/code-review/scan-ci")
     async def scan_code_review_ci_only(run_id: int, request: Request, source_url: str = Form("")):
-        try:
-            source_url = source_url.strip()
-            if not source_url:
-                request.app.state.flash = "Paste a pull request or merge request URL before scanning."
-                return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
-            db.set_state(f"review_source_url:{run_id}", source_url)
-            ci_jobs = scan_ci_jobs(source_url)
-            db.set_state(f"ci_jobs:{run_id}", json.dumps(ci_jobs))
-            request.app.state.flash = f"Scanned {len(ci_jobs)} CI job(s)."
-        except Exception as exc:
-            request.app.state.flash = f"CI scan failed: {exc}"
+        request.app.state.flash = do_code_review_scan(run_id, source_url, False, "ci")
         return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 
     @app.post("/runs/{run_id}/code-review/auto-scan")

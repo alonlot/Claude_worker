@@ -416,9 +416,21 @@ function initCodeReviewAutoScan(root = document) {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body,
       });
-      const data = await response.json();
+      let data = {};
+      try {
+        data = await response.json();
+      } catch {
+        setStatus("Auto-scan returned an unexpected response.");
+        announce("Auto-scan failed");
+        return;
+      }
       if (!response.ok || !data.ok) {
-        setStatus((data && data.error) || "Auto-scan failed.");
+        const msg =
+          (data && data.error) ||
+          (data && data.detail) ||
+          (response.status === 404 ? "Server is missing auto-scan (restart the app)." : "Auto-scan failed.");
+        setStatus(typeof msg === "string" ? msg : "Auto-scan failed.");
+        announce("Auto-scan failed");
         return;
       }
       setStatus(`Auto-scan OK - notes ${data.notes_count}, CI ${data.ci_count}.`);

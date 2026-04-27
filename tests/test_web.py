@@ -198,6 +198,29 @@ def test_build_accepts_unplanned_ticket(tmp_path):
     assert db.fetchone("SELECT state FROM queue_items WHERE id=?", (queue_id,))["state"] in {"needs_plan", "running", "failed"}
 
 
+def test_code_review_demo_ticket_shows_fallback_ci_jobs(tmp_path):
+    config = Config()
+    config.app.database_path = str(tmp_path / "worker.sqlite3")
+    db = Database(config.app.database_path)
+    db.init()
+    db.upsert_ticket(
+        {
+            "key": "DEMO-101",
+            "summary": "Demo",
+            "status": "To Do",
+            "description": "",
+            "eligibility": "eligible",
+        }
+    )
+    run_id = db.create_run("DEMO-101")
+    db.update_run(run_id, state="done", commit_sha="abc")
+    app = create_app(config, db)
+    client = TestClient(app)
+    page = client.get(f"/runs/{run_id}/code-review")
+    assert page.status_code == 200
+    assert "pytest" in page.text
+
+
 def test_push_preview_and_code_review_pages_render(tmp_path):
     config = Config()
     config.app.database_path = str(tmp_path / "worker.sqlite3")

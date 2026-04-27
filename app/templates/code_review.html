@@ -9,7 +9,7 @@
     <a class="button-link secondary" href="/runs/{{ run.id }}">Back to run</a>
   </div>
 
-  <form method="post" action="/runs/{{ run.id }}/code-review/scan-notes" class="settings-form">
+  <form method="post" action="/runs/{{ run.id }}/code-review/scan" class="settings-form">
     <fieldset>
       <legend>Scan Review</legend>
       <label class="wide">Pull request / merge request URL
@@ -25,8 +25,8 @@
         Auto CR after scan
       </label>
       <div class="row">
-        <button data-loading-text="Scanning notes...">Scan review notes</button>
-        <button class="secondary" type="submit" formaction="/runs/{{ run.id }}/code-review/scan-ci" data-loading-text="Scanning CI...">Scan CI</button>
+        <button type="submit" name="scan_mode" value="notes" data-loading-text="Scanning notes...">Scan review notes</button>
+        <button class="secondary" type="submit" name="scan_mode" value="ci" data-loading-text="Scanning CI...">Scan CI</button>
       </div>
       <small id="review-auto-status" class="form-hint">Auto-scan refreshes notes and CI every 45 seconds while this page is open.</small>
     </fieldset>
@@ -76,7 +76,7 @@
         {% if job.details_url %}<small><a class="text-link" href="{{ job.details_url }}" target="_blank" rel="noopener noreferrer">Open job details</a></small>{% endif %}
       </article>
       {% else %}
-      <p class="empty">No CI jobs scanned yet. Run Scan Review first.</p>
+      <p class="empty">No CI jobs in storage yet. Paste a PR/MR URL and press Scan CI, or open a DEMO-101 demo run.</p>
       {% endfor %}
     </div>
   </div>
@@ -111,7 +111,7 @@
       <button data-loading-text="Starting CI fix...">Fix CI</button>
     </form>
     <div class="inline-alert">
-      This action uses scanned CI job status/output as context. Run Scan Review first so CI data is available.
+      This action uses scanned CI job status/output as context. Paste a PR/MR URL and press Scan CI first (or use a DEMO-101 demo run).
     </div>
   </div>
 </section>

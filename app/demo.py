@@ -6,6 +6,39 @@ from pathlib import Path
 
 from app.db import Database
 
+# Demo CI rows stored in app_state JSON; display shape matches parse_ci_jobs() output.
+DEMO_CI_JOBS_SEED: list[dict[str, str]] = [
+    {
+        "name": "pytest",
+        "status": "completed",
+        "conclusion": "failure",
+        "details_url": "https://github.com/alonlot/Claude_worker/actions/runs/101001",
+        "summary": "2 tests failed in test_web.py around code-review auto-scan routes.",
+        "text": "AssertionError: expected 303 but got 400 when source_url is missing.",
+    },
+    {
+        "name": "ruff",
+        "status": "completed",
+        "conclusion": "success",
+        "details_url": "https://github.com/alonlot/Claude_worker/actions/runs/101002",
+        "summary": "Lint checks passed.",
+        "text": "",
+    },
+    {
+        "name": "build",
+        "status": "in_progress",
+        "conclusion": "",
+        "details_url": "https://github.com/alonlot/Claude_worker/actions/runs/101003",
+        "summary": "Building wheel and validating package metadata.",
+        "text": "",
+    },
+]
+
+
+def demo_ci_jobs_for_display() -> list[dict[str, str]]:
+    """Same keys as parse_ci_jobs() for Code Review template."""
+    return [dict(row) for row in DEMO_CI_JOBS_SEED]
+
 
 def seed_demo(db: Database) -> int:
     ticket_key = "DEMO-101"
@@ -121,35 +154,6 @@ def seed_demo(db: Database) -> int:
     for note in notes:
         db.upsert_code_review_note(run_id, note)
     db.set_state(f"review_source_url:{run_id}", "https://github.com/alonlot/Claude_worker/pull/101")
-    demo_ci_jobs = [
-        {
-            "provider": "github",
-            "name": "pytest",
-            "status": "completed",
-            "conclusion": "failure",
-            "details_url": "https://github.com/alonlot/Claude_worker/actions/runs/101001",
-            "summary": "2 tests failed in test_web.py around code-review auto-scan routes.",
-            "text": "AssertionError: expected 303 but got 400 when source_url is missing.",
-        },
-        {
-            "provider": "github",
-            "name": "ruff",
-            "status": "completed",
-            "conclusion": "success",
-            "details_url": "https://github.com/alonlot/Claude_worker/actions/runs/101002",
-            "summary": "Lint checks passed.",
-            "text": "",
-        },
-        {
-            "provider": "github",
-            "name": "build",
-            "status": "in_progress",
-            "conclusion": "",
-            "details_url": "https://github.com/alonlot/Claude_worker/actions/runs/101003",
-            "summary": "Building wheel and validating package metadata.",
-            "text": "",
-        },
-    ]
-    db.set_state(f"ci_jobs:{run_id}", json.dumps(demo_ci_jobs))
+    db.set_state(f"ci_jobs:{run_id}", json.dumps(DEMO_CI_JOBS_SEED))
     db.add_notification("Demo run ready", f"Open run #{run_id} to inspect Push Preview and Code Review.", "info", run_id)
     return run_id
