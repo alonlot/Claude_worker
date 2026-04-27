@@ -154,6 +154,34 @@ def test_queue_delete_route(tmp_path):
     assert db.fetchone("SELECT id FROM queue_items WHERE id=?", (queue_id,)) is None
 
 
+def test_ticket_plan_page_renders(tmp_path):
+    config = Config()
+    config.app.database_path = str(tmp_path / "worker.sqlite3")
+    db = Database(config.app.database_path)
+    db.init()
+    db.upsert_ticket({"key": "A-1", "summary": "One", "status": "To Do", "description": "Body", "eligibility": "eligible"})
+    db.enqueue("A-1")
+    queue_id = db.fetchone("SELECT id FROM queue_items WHERE ticket_key='A-1'")["id"]
+    db.upsert_ticket_plan(
+        {
+            "ticket_key": "A-1",
+            "queue_item_id": queue_id,
+            "repo_url": "git@example/repo.git",
+            "base_branch": "main",
+            "branch_name": "A-1/by_claude_one",
+            "mission": "Do one",
+            "plan_text": "Change files",
+        }
+    )
+    app = create_app(config, db)
+    client = TestClient(app)
+
+    response = client.get(f"/queue/{queue_id}/plan")
+    assert response.status_code == 200
+    assert "Mission Plan" in response.text
+    assert "Do one" in response.text
+
+
 def test_build_accepts_unplanned_ticket(tmp_path):
     config = Config()
     config.app.database_path = str(tmp_path / "worker.sqlite3")
@@ -193,6 +221,9 @@ def test_push_preview_and_code_review_pages_render(tmp_path):
     preview = client.get(f"/runs/{run_id}/push-preview")
     assert preview.status_code == 200
     assert "Push Preview" in preview.text
+    run_page = client.get(f"/runs/{run_id}")
+    assert run_page.status_code == 200
+    assert "Status Timeline" in run_page.text
     cr = client.get(f"/runs/{run_id}/code-review")
     assert cr.status_code == 200
     assert "Code Review" in cr.text

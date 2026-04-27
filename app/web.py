@@ -111,7 +111,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             message=f"Claude could not prepare queue item #{queue_id}.",
         )
         request.app.state.flash = "Claude is preparing the mission plan."
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse(f"/queue/{queue_id}/plan", status_code=303)
 
     @app.post("/queue/{queue_id}/revise")
     async def revise_plan(queue_id: int, request: Request, user_notes: str = Form("")):
@@ -122,7 +122,25 @@ def create_app(config: Config, db: Database) -> FastAPI:
             message=f"Claude could not revise queue item #{queue_id}.",
         )
         request.app.state.flash = "Claude is revising the plan."
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse(f"/queue/{queue_id}/plan", status_code=303)
+
+    @app.get("/queue/{queue_id}/plan", response_class=HTMLResponse)
+    async def queue_plan(queue_id: int, request: Request):
+        item = db.queue_item(queue_id)
+        if not item:
+            request.app.state.flash = "Queue item not found."
+            return RedirectResponse("/", status_code=303)
+        return templates.TemplateResponse(
+            request,
+            "ticket_plan.html",
+            {
+                "request": request,
+                "title": request.app.state.config.ui.title,
+                "flash": pop_flash(request),
+                "item": item,
+                "plan": db.plan_for_queue_item(queue_id),
+            },
+        )
 
     @app.post("/queue/{queue_id}/build")
     async def build_queue(queue_id: int, request: Request):
@@ -573,8 +591,48 @@ def run_detail_context(request: Request, db: Database, config: Config, run_id: i
         "sub_agents": db.fetchall("SELECT * FROM sub_agents WHERE run_id=? ORDER BY updated_at DESC", (run_id,)),
         "ide_url": build_ide_url(run_id, run),
         "review_notes": db.code_review_notes(run_id),
+        "timeline": run_timeline(db, run_id, run),
     }
     return data
+
+
+def run_timeline(db: Database, run_id: int, run) -> list[dict[str, str]]:
+    if not run:
+        return []
+    items: list[dict[str, str]] = [
+        {"time": run["created_at"], "title": "Run created", "detail": f"Ticket {run['ticket_key']} entered the worker."}
+    ]
+    state_titles = {
+        "preparing_git": "Git preparation",
+        "running_claude": "Claude implementation",
+        "reviewing": "Review",
+        "needs_cr_fix": "Needs CR fix",
+        "done": "Done",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "pushed": "Pushed",
+    }
+    if run["state"] in state_titles:
+        items.append({"time": run["updated_at"], "title": state_titles[run["state"]], "detail": run["error"] or f"Progress {run['progress']}%"})
+    if run["branch_name"]:
+        items.append({"time": run["updated_at"], "title": "Branch selected", "detail": run["branch_name"]})
+    if run["commit_sha"]:
+        items.append({"time": run["updated_at"], "title": "Commit created", "detail": run["commit_sha"]})
+    if run["pushed_at"]:
+        items.append({"time": run["pushed_at"], "title": "Branch pushed", "detail": run["branch_name"]})
+    phase_rows = db.fetchall(
+        """
+        SELECT phase, MIN(created_at) AS first_seen
+        FROM logs
+        WHERE run_id=?
+        GROUP BY phase
+        ORDER BY first_seen
+        """,
+        (run_id,),
+    )
+    for row in phase_rows:
+        items.append({"time": row["first_seen"], "title": f"{row['phase']} logs", "detail": "First log entry in this phase."})
+    return sorted(items, key=lambda item: item["time"] or "")
 
 
 def run_interaction_context(db: Database, run_id: int) -> dict:

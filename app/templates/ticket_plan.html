@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="hero-head">
+    <div>
+      <h2>{{ item.ticket_key }} Plan</h2>
+      <p>{{ item.summary }} - {{ item.state }}</p>
+    </div>
+    <div class="row">
+      <a class="button-link secondary" href="/">Dashboard</a>
+      {% if item.state in ["needs_plan", "plan_ready", "queued"] %}
+      <form method="post" action="/queue/{{ item.id }}/build">
+        <button data-loading-text="Starting...">Build now</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="run-facts">
+    <span><strong>Status</strong>{{ item.status }}</span>
+    <span><strong>Queue state</strong>{{ item.state }}</span>
+    <span><strong>Priority</strong>{{ item.priority }}</span>
+    <span><strong>Created</strong>{{ item.created_at }}</span>
+  </div>
+
+  <article class="ticket-focus">
+    <div class="ticket-focus-head">
+      <span class="ticket">{{ item.ticket_key }}</span>
+      <span class="pill">{{ item.status }}</span>
+    </div>
+    <h3>{{ item.summary }}</h3>
+    <p>{{ item.description or "No ticket description saved." }}</p>
+  </article>
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <h2>Mission Plan</h2>
+    {% if plan %}
+    <div class="run-facts">
+      <span><strong>Repo</strong>{{ plan.repo_url or "-" }}</span>
+      <span><strong>Base</strong>{{ plan.base_branch or "-" }}</span>
+      <span><strong>Branch</strong>{{ plan.branch_name or "-" }}</span>
+      <span><strong>Updated</strong>{{ plan.updated_at }}</span>
+    </div>
+    <article class="ticket-focus">
+      <h3>{{ plan.mission }}</h3>
+      <p>{{ plan.plan_text }}</p>
+    </article>
+    {% if plan.user_notes %}
+    <details class="review-box">
+      <summary>Latest User Notes</summary>
+      <pre>{{ plan.user_notes }}</pre>
+    </details>
+    {% endif %}
+    {% else %}
+    <p class="empty">No mission plan yet. You can ask Claude for one, or build immediately.</p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h2>Plan Actions</h2>
+    <form method="post" action="/queue/{{ item.id }}/prepare" class="stack">
+      <button data-loading-text="Planning...">Ask Claude for plan</button>
+    </form>
+    <form method="post" action="/queue/{{ item.id }}/revise" class="stack plan-revise">
+      <label>Revise plan
+        <textarea class="compact message-box" name="user_notes" placeholder="Tell Claude what to change in the mission, repo, base branch, branch name, risk, or implementation plan."></textarea>
+      </label>
+      <button class="secondary" data-loading-text="Revising...">Revise with Claude</button>
+    </form>
+    <div class="inline-alert">
+      Planning is optional. Build now will use direct Claude discovery if no plan exists.
+    </div>
+  </div>
+</section>
+{% endblock %}

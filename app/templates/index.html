@@ -34,36 +34,32 @@
   {% include "_status.html" %}
 </div>
 
-<section class="grid">
+<section class="dashboard-grid">
   <div class="panel">
-    <h2>Queue</h2>
+    <div class="panel-head">
+      <h2>Queue</h2>
+      <span class="count-pill">{{ queue|length }}</span>
+    </div>
     <div class="start-drop" id="start-drop">Drag any queued ticket here to build it now</div>
     <ol class="queue" id="queue-list">
       {% for item in queue %}
-        <li draggable="true" data-id="{{ item.id }}" data-state="{{ item.state }}">
-          <div>
+        <li class="queue-row" draggable="true" data-id="{{ item.id }}" data-state="{{ item.state }}">
+          <div class="queue-main">
             <span class="ticket">{{ item.ticket_key }}</span>
             <small>{{ item.summary }}</small>
           </div>
-          <div class="queue-plan">
+          <div class="queue-meta">
             {% if item.plan_id %}
-            <strong>{{ item.mission }}</strong>
-            <small>{{ item.repo_url }} @ {{ item.base_branch }}</small>
-            <small>{{ item.branch_name }}</small>
-            <details>
-              <summary>Plan</summary>
-              <p>{{ item.plan_text }}</p>
-            </details>
-            <form method="post" action="/queue/{{ item.id }}/revise" class="stack">
-              <textarea class="compact" name="user_notes" placeholder="Tell Claude what to change in the mission or plan."></textarea>
-              <button class="tiny secondary" data-loading-text="Revising...">Revise plan</button>
-            </form>
+            <span>{{ item.mission }}</span>
+            <small>{{ item.base_branch }} - {{ item.branch_name }}</small>
             {% else %}
-            <small>Optional: ask Claude for a mission plan before building.</small>
+            <span>Plan optional</span>
+            <small>Build now or open plan page.</small>
             {% endif %}
           </div>
           <div class="queue-actions">
             <span class="pill">{{ item.state }}</span>
+            <a class="button-link tiny secondary" href="/queue/{{ item.id }}/plan">Plan</a>
             {% if item.state in ["needs_plan", "failed"] %}
             <form method="post" action="/queue/{{ item.id }}/prepare"><button class="tiny" data-loading-text="Planning...">Ask Claude</button></form>
             {% endif %}
@@ -91,7 +87,10 @@
   </div>
 
   <div class="panel">
-    <h2>Manual Ticket Selection</h2>
+    <div class="panel-head">
+      <h2>Manual Tickets</h2>
+      <span class="count-pill">{{ manual|length }}</span>
+    </div>
     <div class="list">
     {% for ticket in manual %}
       <article>
@@ -105,11 +104,11 @@
     {% endfor %}
     </div>
   </div>
-</section>
-
-<section class="grid">
   <div class="panel">
-    <h2>Notifications</h2>
+    <div class="panel-head">
+      <h2>Notifications</h2>
+      <span class="count-pill">{{ notifications|length }}</span>
+    </div>
     <div class="list">
       {% if current and current_questions %}
       <article class="dashboard-question-alert">
@@ -129,11 +128,11 @@
       {% endfor %}
     </div>
   </div>
-</section>
-
-<section class="grid">
   <div class="panel">
-    <h2>Finished Runs</h2>
+    <div class="panel-head">
+      <h2>Finished Runs</h2>
+      <span class="count-pill">{{ done|length }}</span>
+    </div>
     <div class="list">
     {% for run in done %}
       <article>
@@ -161,7 +160,10 @@
   </div>
 
   <div class="panel">
-    <h2>Skipped Tickets</h2>
+    <div class="panel-head">
+      <h2>Skipped Tickets</h2>
+      <span class="count-pill">{{ skipped|length }}</span>
+    </div>
     <div class="list">
     {% for ticket in skipped %}
       <article>

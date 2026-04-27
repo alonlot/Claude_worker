@@ -40,6 +40,20 @@
     {% if run.error %}
     <div class="inline-alert error-alert">{{ run.error }}</div>
     {% endif %}
+    {% if timeline %}
+    <section class="timeline">
+      <h3>Status Timeline</h3>
+      <ol>
+        {% for event in timeline %}
+        <li>
+          <time>{{ event.time }}</time>
+          <strong>{{ event.title }}</strong>
+          <span>{{ event.detail }}</span>
+        </li>
+        {% endfor %}
+      </ol>
+    </section>
+    {% endif %}
     {% if run.changed_files %}
     <details class="review-box">
       <summary>Changed Files</summary>
