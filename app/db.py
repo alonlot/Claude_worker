@@ -250,6 +250,18 @@ class Database:
             conn.commit()
             return int(cur.lastrowid)
 
+    def unconsumed_agent_inputs(self, run_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            "SELECT * FROM agent_inputs WHERE run_id=? AND consumed=0 ORDER BY id",
+            (run_id,),
+        )
+
+    def mark_agent_input_consumed(self, input_id: int) -> None:
+        self.execute(
+            "UPDATE agent_inputs SET consumed=1, consumed_at=CURRENT_TIMESTAMP WHERE id=?",
+            (input_id,),
+        )
+
     def upsert_sub_agent(
         self,
         run_id: int,

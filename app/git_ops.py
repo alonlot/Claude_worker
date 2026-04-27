@@ -4,8 +4,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from app.config import Config
-from app.utils import ensure_child_path, inject_token_into_url
+from app.config import Config, secret_values
+from app.utils import ensure_child_path, inject_token_into_url, mask_secrets
 
 
 class GitError(RuntimeError):
@@ -24,9 +24,11 @@ class GitOps:
             capture_output=True,
             check=False,
         )
+        output = mask_secrets((proc.stdout or "").strip(), secret_values(self.config))
+        error = mask_secrets((proc.stderr or "").strip(), secret_values(self.config))
         if proc.returncode != 0:
-            raise GitError((proc.stderr or proc.stdout or "git command failed").strip())
-        return proc.stdout.strip()
+            raise GitError(error or output or "git command failed")
+        return output
 
     def clone_for_ticket(self, ticket_key: str, repo_url: str) -> Path:
         workspace_root = Path(self.config.app.workspace_dir)

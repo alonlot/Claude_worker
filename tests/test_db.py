@@ -28,10 +28,13 @@ def test_agent_questions_inputs_and_subagents(tmp_path):
 
     question = db.fetchone("SELECT * FROM agent_questions WHERE id=?", (question_id,))
     user_input = db.fetchone("SELECT * FROM agent_inputs WHERE id=?", (input_id,))
+    db.mark_agent_input_consumed(input_id)
+    consumed_input = db.fetchone("SELECT * FROM agent_inputs WHERE id=?", (input_id,))
     sub_agents = db.fetchall("SELECT * FROM sub_agents WHERE run_id=?", (run_id,))
     assert question["state"] == "answered"
     assert question["answer"] == "Both"
     assert user_input["message"] == "Focus on the UI first."
+    assert consumed_input["consumed"] == 1
     assert len(sub_agents) == 1
     assert sub_agents[0]["status"] == "done"
     assert sub_agents[0]["progress"] == 100

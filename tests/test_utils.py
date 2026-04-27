@@ -8,6 +8,7 @@ def test_slugify_branch_name():
 
 def test_mask_secrets():
     assert mask_secrets("token abc123", ["abc123"]) == "token ***"
+    assert mask_secrets("https://me:abc123@example.com/repo.git", ["abc123"]) == "https://***@example.com/repo.git"
 
 
 def test_inject_token_into_https_url():

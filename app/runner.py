@@ -104,12 +104,25 @@ class Worker:
         self.db.update_run(run_id, state="preparing_git", progress=5)
         self.claude = ClaudeRunner(self.config, lambda phase, line: self._log(run_id, phase, line))
 
-        discovery_output = await self.claude.run_prompt("discover", discovery_prompt(ticket))
+        self.db.upsert_sub_agent(run_id, "claude-discovery", "Pick repo, base branch, and branch summary", "running", 10)
+        discovery_output = await self.claude.run_prompt(
+            "discover",
+            discovery_prompt(
+                ticket,
+                self.config.git.default_repo_url,
+                self.config.git.default_base_branch,
+            ),
+        )
         discovery = parse_discovery(discovery_output)
         if not discovery["repo_url"]:
-            raise RuntimeError("Claude discovery did not provide repo_url")
+            discovery["repo_url"] = self.config.git.default_repo_url
+        if not discovery["repo_url"]:
+            raise RuntimeError("Claude discovery did not provide repo_url and git.default_repo_url is not configured")
+        if not discovery["base_branch"]:
+            discovery["base_branch"] = self.config.git.default_base_branch or "main"
         summary = discovery["summary"] or ticket.get("summary", "work")
         branch = branch_name(ticket["ticket_key"], summary)
+        self.db.upsert_sub_agent(run_id, "claude-discovery", "Pick repo, base branch, and branch summary", "done", 100, branch)
         self.db.update_run(
             run_id,
             repo_url=discovery["repo_url"],
@@ -127,12 +140,18 @@ class Worker:
 
         self._raise_if_cancelled()
         self.db.update_run(run_id, state="running_claude", progress=30)
-        impl_output = await self.claude.run_prompt("claude", implementation_prompt(ticket, branch), cwd=repo_path)
+        impl_prompt = implementation_prompt(ticket, branch) + self._consume_agent_inputs(run_id)
+        self.db.upsert_sub_agent(run_id, "claude-implementation", "Implement the Jira ticket", "running", 30)
+        impl_output = await self.claude.run_prompt("claude", impl_prompt, cwd=repo_path)
+        self.db.upsert_sub_agent(run_id, "claude-implementation", "Implement the Jira ticket", "done", 100)
         self.db.update_run(run_id, progress=max(70, self._progress_from_output(impl_output, 70)))
 
         self._raise_if_cancelled()
         self.db.update_run(run_id, state="reviewing", progress=82)
-        review_output = await self.claude.run_prompt("review", review_prompt(ticket), cwd=repo_path)
+        review_prompt_text = review_prompt(ticket) + self._consume_agent_inputs(run_id)
+        self.db.upsert_sub_agent(run_id, "claude-review", "Review the implementation", "running", 82)
+        review_output = await self.claude.run_prompt("review", review_prompt_text, cwd=repo_path)
+        self.db.upsert_sub_agent(run_id, "claude-review", "Review the implementation", "done", 100)
         self.db.update_run(run_id, review_output=review_output, state="needs_cr_fix", progress=92)
 
         if self.config.claude.auto_cr_fix and self.config.claude.allow_cr_fix:
@@ -150,7 +169,10 @@ class Worker:
             raise RuntimeError("CR fix is disabled in config")
         self.claude = ClaudeRunner(self.config, lambda phase, line: self._log(run_id, phase, line))
         self.db.update_run(run_id, state="running_claude", progress=94)
-        await self.claude.run_prompt("cr-fix", cr_fix_prompt(dict(ticket), run["review_output"]), cwd=run["workspace_path"])
+        fix_prompt = cr_fix_prompt(dict(ticket), run["review_output"]) + self._consume_agent_inputs(run_id)
+        self.db.upsert_sub_agent(run_id, "claude-cr-fix", "Fix review findings", "running", 94)
+        await self.claude.run_prompt("cr-fix", fix_prompt, cwd=run["workspace_path"])
+        self.db.upsert_sub_agent(run_id, "claude-cr-fix", "Fix review findings", "done", 100)
         review_output = await self.claude.run_prompt("review", review_prompt(dict(ticket)), cwd=run["workspace_path"])
         self.db.update_run(
             run_id,
@@ -186,6 +208,17 @@ class Worker:
     def _raise_if_cancelled(self) -> None:
         if self.cancel_requested:
             raise asyncio.CancelledError()
+
+    def _consume_agent_inputs(self, run_id: int) -> str:
+        rows = self.db.unconsumed_agent_inputs(run_id)
+        if not rows:
+            return ""
+        messages: list[str] = []
+        for row in rows:
+            messages.append(str(row["message"]))
+            self.db.mark_agent_input_consumed(int(row["id"]))
+            self._log(run_id, "system", f"Consumed user input #{row['id']} for next Claude phase.")
+        return "\n\nAdditional user instructions submitted during this run:\n" + "\n".join(f"- {message}" for message in messages)
 
     @staticmethod
     def _progress_from_line(line: str) -> int | None:

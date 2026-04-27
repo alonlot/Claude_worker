@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import contextlib
 from pathlib import Path
 from typing import Callable
 
@@ -50,13 +51,22 @@ class ClaudeRunner:
 
         output: list[str] = []
         assert proc.stdout is not None
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            text = mask_secrets(line.decode("utf-8", errors="replace").rstrip(), secret_values(self.config))
-            output.append(text)
-            self.log(phase, text)
+        try:
+            while True:
+                line = await asyncio.wait_for(
+                    proc.stdout.readline(),
+                    timeout=max(1, int(self.config.claude.timeout_seconds)),
+                )
+                if not line:
+                    break
+                text = mask_secrets(line.decode("utf-8", errors="replace").rstrip(), secret_values(self.config))
+                output.append(text)
+                self.log(phase, text)
+        except asyncio.TimeoutError as exc:
+            self.cancel()
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            raise RuntimeError("Claude timed out") from exc
 
         try:
             await asyncio.wait_for(proc.wait(), timeout=2)
@@ -79,16 +89,23 @@ def parse_discovery(output: str) -> dict[str, str]:
     return {
         "repo_url": str(data.get("repo_url", "")).strip(),
         "base_branch": str(data.get("base_branch", "")).strip(),
-        "summary": str(data.get("summary", "")).strip(),
+        "summary": str(data.get("summary", data.get("branch_summary", ""))).strip(),
     }
 
 
-def discovery_prompt(ticket: dict[str, str]) -> str:
+def discovery_prompt(ticket: dict[str, str], default_repo_url: str = "", default_base_branch: str = "main") -> str:
+    default_repo = default_repo_url or "unknown"
+    default_base = default_base_branch or "main"
     return f"""
 You are helping a local automation prepare a Jira ticket for implementation.
 Return only JSON with keys: repo_url, base_branch, summary.
-Infer the Git clone URL and base branch from the ticket when possible.
-The summary must be a short branch-safe English phrase.
+The Python worker will do all Git operations after reading this JSON.
+Use this configured default repo_url unless the ticket explicitly names a different repository:
+{default_repo}
+Use this configured default base_branch unless the ticket explicitly names a different base branch:
+{default_base}
+The summary must be a short branch-safe English phrase used by Python to create the feature branch.
+Do not include Markdown, commentary, code fences, commands, or any keys other than repo_url, base_branch, summary.
 
 Ticket: {ticket['key']}
 Title: {ticket.get('summary', '')}

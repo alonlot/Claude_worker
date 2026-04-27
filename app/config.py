@@ -42,6 +42,8 @@ class GitConfig:
     username: str = ""
     token: str = ""
     remote_name: str = "origin"
+    default_repo_url: str = ""
+    default_base_branch: str = "main"
 
 
 @dataclass

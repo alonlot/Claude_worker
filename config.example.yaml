@@ -21,6 +21,8 @@ git:
   username: ""
   token: ""
   remote_name: origin
+  default_repo_url: git@github.com:alonlot/Claude_worker.git
+  default_base_branch: main
 
 claude:
   command: claude

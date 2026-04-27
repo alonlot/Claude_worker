@@ -21,6 +21,7 @@ def mask_secrets(text: str, secrets: list[str]) -> str:
     for secret in secrets:
         if secret:
             masked = masked.replace(secret, "***")
+    masked = re.sub(r"(https?://)[^/\s@]+:[^/\s@]+@", r"\1***@", masked)
     return masked
 
 

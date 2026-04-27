@@ -1,8 +1,8 @@
 # Jira Claude Worker
 
-Linux-first local web app for controlling a Jira-to-Claude automation worker.
+Local web app for controlling a Jira-to-Claude automation worker.
 
-The website and its interaction model are the important part of this project. The included Python worker is a functional placeholder so the UI has something to call. If you already have the real automation code, wire it to the routes/database contract described in `WORKER_INTEGRATION_CONTRACT.txt`.
+The website is the control surface. The Python worker scans Jira, asks Claude for ticket routing JSON, clones and checks out the target Git branch itself, runs Claude for implementation and review, records logs/progress in SQLite, and lets the user push when ready.
 
 ## Setup
 
@@ -31,5 +31,6 @@ pytest
 
 - Secrets are stored in `config.yaml` as requested. The UI and logs mask known secret values.
 - Python owns all Git operations. Claude prompts explicitly forbid Git commands.
+- Set `git.default_repo_url` and `git.default_base_branch` when most tickets should use the same repository.
 - The Claude executable is configurable at `claude.command`; use an absolute path if `claude` is not on `PATH`.
-- See `WORKER_INTEGRATION_CONTRACT.txt` for exactly what your real Python worker should export/update for the website.
+- See `WORKER_INTEGRATION_CONTRACT.txt` for the UI/database contract the worker follows.
