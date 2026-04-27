@@ -299,6 +299,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             return RedirectResponse("/", status_code=303)
         detail["review_notes"] = db.code_review_notes(run_id)
         detail["auto_cr"] = db.get_state(f"auto_cr:{run_id}", "0") == "1"
+        detail["comment_back_default"] = db.get_state(f"comment_back:{run_id}", "1") == "1"
         ci_jobs = parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", ""))
         if not ci_jobs and detail["run"]["ticket_key"] == "DEMO-101":
             ci_jobs = demo_ci_jobs_for_display()
@@ -367,8 +368,10 @@ def create_app(config: Config, db: Database) -> FastAPI:
         user_notes: str = Form(""),
         comment_back: str | None = Form(None),
     ):
+        comment_back_on = comment_back == "on"
+        db.set_state(f"comment_back:{run_id}", "1" if comment_back_on else "0")
         spawn_tracked_task(
-            worker.run_external_code_review_fix(run_id, user_notes.strip(), comment_back == "on"),
+            worker.run_external_code_review_fix(run_id, user_notes.strip(), comment_back_on),
             db,
             title="Code review fix failed",
             message=f"Code review fix crashed for run #{run_id}.",

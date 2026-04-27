@@ -255,6 +255,43 @@ def test_push_preview_and_code_review_pages_render(tmp_path):
     assert missing.status_code == 303
 
 
+def test_code_review_checkbox_preferences_persist(tmp_path):
+    config = Config()
+    config.app.database_path = str(tmp_path / "worker.sqlite3")
+    db = Database(config.app.database_path)
+    db.init()
+    db.upsert_ticket({"key": "A-1", "summary": "One", "status": "To Do", "eligibility": "eligible"})
+    run_id = db.create_run("A-1")
+    db.update_run(run_id, state="done", commit_sha="abc123")
+    app = create_app(config, db)
+    client = TestClient(app)
+
+    set_scan_pref = client.post(
+        f"/runs/{run_id}/code-review/scan",
+        data={"source_url": "https://github.com/alonlot/Claude_worker/pull/101", "scan_mode": "notes"},
+        follow_redirects=False,
+    )
+    assert set_scan_pref.status_code == 303
+    assert db.get_state(f"auto_cr:{run_id}", "1") == "0"
+
+    set_comment_back = client.post(
+        f"/runs/{run_id}/code-review/fix",
+        data={"user_notes": "n/a"},
+        follow_redirects=False,
+    )
+    assert set_comment_back.status_code == 303
+    assert db.get_state(f"comment_back:{run_id}", "1") == "0"
+
+    page = client.get(f"/runs/{run_id}/code-review")
+    assert page.status_code == 200
+    assert 'id="review-auto-cr" type="checkbox" name="auto_cr"' in page.text
+    assert 'name="comment_back"' in page.text
+    auto_cr_line = next(line for line in page.text.splitlines() if 'id="review-auto-cr"' in line)
+    comment_back_line = next(line for line in page.text.splitlines() if 'name="comment_back"' in line)
+    assert "checked" not in auto_cr_line
+    assert "checked" not in comment_back_line
+
+
 def test_workspace_file_api(tmp_path):
     config = Config()
     config.app.database_path = str(tmp_path / "worker.sqlite3")

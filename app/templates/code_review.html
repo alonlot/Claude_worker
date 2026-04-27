@@ -88,7 +88,7 @@
         <textarea class="compact message-box" name="user_notes" placeholder="Extra guidance for fixing/responding to reviewer notes."></textarea>
       </label>
       <label class="check">
-        <input type="checkbox" name="comment_back" checked>
+        <input type="checkbox" name="comment_back" {% if comment_back_default %}checked{% endif %}>
         Comment back to review notes
       </label>
       <button data-loading-text="Starting CR...">Do CR</button>
