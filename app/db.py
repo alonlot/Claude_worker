@@ -31,6 +31,24 @@ CREATE TABLE IF NOT EXISTS queue_items (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS ticket_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_key TEXT NOT NULL,
+    queue_item_id INTEGER,
+    state TEXT NOT NULL DEFAULT 'draft',
+    repo_url TEXT NOT NULL DEFAULT '',
+    base_branch TEXT NOT NULL DEFAULT '',
+    branch_name TEXT NOT NULL DEFAULT '',
+    mission TEXT NOT NULL DEFAULT '',
+    plan_text TEXT NOT NULL DEFAULT '',
+    user_notes TEXT NOT NULL DEFAULT '',
+    raw_output TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_plans_queue ON ticket_plans(queue_item_id);
+
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticket_key TEXT NOT NULL,
@@ -43,6 +61,11 @@ CREATE TABLE IF NOT EXISTS runs (
     review_output TEXT NOT NULL DEFAULT '',
     error TEXT NOT NULL DEFAULT '',
     pushed_at TEXT,
+    commit_sha TEXT NOT NULL DEFAULT '',
+    commit_message TEXT NOT NULL DEFAULT '',
+    changed_files TEXT NOT NULL DEFAULT '',
+    diff_summary TEXT NOT NULL DEFAULT '',
+    run_report TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finished_at TEXT
@@ -126,6 +149,20 @@ class Database:
     def init(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            self._ensure_columns(conn)
+
+    def _ensure_columns(self, conn: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+        for name, definition in {
+            "commit_sha": "TEXT NOT NULL DEFAULT ''",
+            "commit_message": "TEXT NOT NULL DEFAULT ''",
+            "changed_files": "TEXT NOT NULL DEFAULT ''",
+            "diff_summary": "TEXT NOT NULL DEFAULT ''",
+            "run_report": "TEXT NOT NULL DEFAULT ''",
+        }.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {definition}")
+        conn.commit()
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         with self.connect() as conn:
@@ -168,9 +205,9 @@ class Database:
             ),
         )
 
-    def enqueue(self, ticket_key: str) -> None:
+    def enqueue(self, ticket_key: str, state: str = "needs_plan") -> None:
         existing = self.fetchone(
-            "SELECT id FROM queue_items WHERE ticket_key=? AND state IN ('queued', 'running')",
+            "SELECT id FROM queue_items WHERE ticket_key=? AND state IN ('needs_plan', 'planning', 'plan_ready', 'queued', 'running')",
             (ticket_key,),
         )
         if existing:
@@ -178,8 +215,8 @@ class Database:
         priority_row = self.fetchone("SELECT COALESCE(MAX(priority), 0) + 1 AS next_priority FROM queue_items")
         priority = int(priority_row["next_priority"] if priority_row else 1)
         self.execute(
-            "INSERT INTO queue_items(ticket_key, priority, state) VALUES (?, ?, 'queued')",
-            (ticket_key, priority),
+            "INSERT INTO queue_items(ticket_key, priority, state) VALUES (?, ?, ?)",
+            (ticket_key, priority, state),
         )
 
     def next_queue_item(self) -> sqlite3.Row | None:
@@ -192,6 +229,17 @@ class Database:
             ORDER BY q.priority ASC, q.id ASC
             LIMIT 1
             """
+        )
+
+    def queue_item(self, queue_id: int) -> sqlite3.Row | None:
+        return self.fetchone(
+            """
+            SELECT q.*, t.summary, t.description, t.status, t.url, t.labels
+            FROM queue_items q
+            JOIN tickets t ON t.key = q.ticket_key
+            WHERE q.id=?
+            """,
+            (queue_id,),
         )
 
     def create_run(self, ticket_key: str) -> int:
@@ -324,6 +372,63 @@ class Database:
             "UPDATE queue_items SET state=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
             (state, queue_id),
         )
+
+    def delete_queue_item(self, queue_id: int) -> None:
+        self.execute("DELETE FROM queue_items WHERE id=? AND state!='running'", (queue_id,))
+
+    def clear_finished_queue_items(self) -> None:
+        self.execute("DELETE FROM queue_items WHERE state IN ('done', 'failed', 'cancelled')")
+
+    def upsert_ticket_plan(self, plan: dict[str, Any]) -> int:
+        existing = self.fetchone("SELECT id FROM ticket_plans WHERE queue_item_id=?", (plan.get("queue_item_id"),))
+        if existing:
+            self.execute(
+                """
+                UPDATE ticket_plans
+                SET state=?, repo_url=?, base_branch=?, branch_name=?, mission=?, plan_text=?,
+                    user_notes=?, raw_output=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (
+                    plan.get("state", "draft"),
+                    plan.get("repo_url", ""),
+                    plan.get("base_branch", ""),
+                    plan.get("branch_name", ""),
+                    plan.get("mission", ""),
+                    plan.get("plan_text", ""),
+                    plan.get("user_notes", ""),
+                    plan.get("raw_output", ""),
+                    existing["id"],
+                ),
+            )
+            return int(existing["id"])
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO ticket_plans(
+                    ticket_key, queue_item_id, state, repo_url, base_branch, branch_name,
+                    mission, plan_text, user_notes, raw_output
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    plan["ticket_key"],
+                    plan.get("queue_item_id"),
+                    plan.get("state", "draft"),
+                    plan.get("repo_url", ""),
+                    plan.get("base_branch", ""),
+                    plan.get("branch_name", ""),
+                    plan.get("mission", ""),
+                    plan.get("plan_text", ""),
+                    plan.get("user_notes", ""),
+                    plan.get("raw_output", ""),
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def plan_for_queue_item(self, queue_id: int) -> sqlite3.Row | None:
+        return self.fetchone("SELECT * FROM ticket_plans WHERE queue_item_id=? ORDER BY id DESC LIMIT 1", (queue_id,))
 
     def reorder_queue(self, ordered_ids: list[int]) -> None:
         with self.connect() as conn:

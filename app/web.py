@@ -48,13 +48,17 @@ def create_app(config: Config, db: Database) -> FastAPI:
         if db.queue_paused():
             request.app.state.flash = "Queue is paused. Resume it before running tickets."
         else:
-            spawn_tracked_task(
-                worker.run_next(),
-                db,
-                title="Run loop failed",
-                message="Background run-once task crashed. Check logs for details.",
-            )
-            request.app.state.flash = "Run started."
+            ready = db.fetchone("SELECT id FROM queue_items WHERE state='plan_ready' ORDER BY priority ASC, id ASC LIMIT 1")
+            if not ready:
+                request.app.state.flash = "No planned ticket is ready. Ask Claude for a plan first."
+            else:
+                spawn_tracked_task(
+                    worker.run_queue_item(int(ready["id"])),
+                    db,
+                    title="Run loop failed",
+                    message="Background run-once task crashed. Check logs for details.",
+                )
+                request.app.state.flash = "Build started."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/queue/start-interval")
@@ -85,6 +89,58 @@ def create_app(config: Config, db: Database) -> FastAPI:
     async def reorder_queue(order: str = Form("")):
         ids = [int(value) for value in order.split(",") if value.strip().isdigit()]
         db.reorder_queue(ids)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/queue/{queue_id}/prepare")
+    async def prepare_queue(queue_id: int, request: Request):
+        spawn_tracked_task(
+            worker.prepare_queue_item(queue_id),
+            db,
+            title="Plan failed",
+            message=f"Claude could not prepare queue item #{queue_id}.",
+        )
+        request.app.state.flash = "Claude is preparing the mission plan."
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/queue/{queue_id}/revise")
+    async def revise_plan(queue_id: int, request: Request, user_notes: str = Form("")):
+        spawn_tracked_task(
+            worker.prepare_queue_item(queue_id, user_notes.strip()),
+            db,
+            title="Plan revision failed",
+            message=f"Claude could not revise queue item #{queue_id}.",
+        )
+        request.app.state.flash = "Claude is revising the plan."
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/queue/{queue_id}/build")
+    async def build_queue(queue_id: int, request: Request):
+        item = db.queue_item(queue_id)
+        if not item:
+            request.app.state.flash = "Queue item not found."
+            return RedirectResponse("/", status_code=303)
+        if item["state"] != "plan_ready":
+            request.app.state.flash = "Ask Claude for a plan before building this ticket."
+            return RedirectResponse("/", status_code=303)
+        spawn_tracked_task(
+            worker.run_queue_item(queue_id),
+            db,
+            title="Build failed",
+            message=f"Build crashed for queue item #{queue_id}.",
+        )
+        request.app.state.flash = "Build started."
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/queue/{queue_id}/delete")
+    async def delete_queue(queue_id: int, request: Request):
+        db.delete_queue_item(queue_id)
+        request.app.state.flash = "Queue item removed."
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/queue/clear-finished")
+    async def clear_finished_queue(request: Request):
+        db.clear_finished_queue_items()
+        request.app.state.flash = "Finished queue items cleared."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/tickets/{ticket_key}/enqueue")
@@ -158,6 +214,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
         except Exception as exc:
             request.app.state.flash = f"Push failed: {exc}"
         return RedirectResponse("/", status_code=303)
+
+    @app.get("/runs/{run_id}/summary", response_class=HTMLResponse)
+    async def run_summary_partial(run_id: int, request: Request):
+        detail = run_detail_context(request, db, request.app.state.config, run_id)
+        return templates.TemplateResponse(request, "_run_summary.html", detail)
 
     @app.get("/notifications/unread")
     async def unread_notifications():
@@ -371,9 +432,10 @@ def context(request: Request, db: Database, config: Config) -> dict:
         "queue_paused": db.queue_paused(),
         "queue": db.fetchall(
             """
-            SELECT q.*, t.summary, t.status
+            SELECT q.*, t.summary, t.status, p.id AS plan_id, p.mission, p.repo_url, p.base_branch, p.branch_name, p.plan_text
             FROM queue_items q JOIN tickets t ON t.key=q.ticket_key
-            WHERE q.state IN ('queued', 'running')
+            LEFT JOIN ticket_plans p ON p.queue_item_id=q.id
+            WHERE q.state IN ('needs_plan', 'planning', 'plan_ready', 'queued', 'running')
             ORDER BY q.priority ASC, q.id ASC
             """
         ),

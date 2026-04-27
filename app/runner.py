@@ -11,6 +11,8 @@ from app.claude_runner import (
     cr_fix_prompt,
     discovery_prompt,
     implementation_prompt,
+    parse_plan,
+    planning_prompt,
     parse_discovery,
     review_prompt,
 )
@@ -81,48 +83,118 @@ class Worker:
             item = self.db.next_queue_item()
             if not item:
                 return None
-            self.db.set_queue_state(int(item["id"]), "running")
-            run_id = self.db.create_run(item["ticket_key"])
-            try:
-                await self._run_ticket(run_id, item)
-                self.db.set_queue_state(int(item["id"]), "done")
-            except asyncio.CancelledError:
-                self.db.update_run(run_id, state="cancelled", error="cancelled", finished_at=datetime.utcnow().isoformat())
-                self.db.add_notification("Run cancelled", item["ticket_key"], "warning", run_id)
-                self.db.set_queue_state(int(item["id"]), "cancelled")
-            except Exception as exc:
-                self._log(run_id, "error", str(exc))
-                self.db.update_run(run_id, state="failed", error=str(exc), finished_at=datetime.utcnow().isoformat())
-                self.db.add_notification("Run failed", f"{item['ticket_key']}: {exc}", "error", run_id)
-                self.db.set_queue_state(int(item["id"]), "failed")
-            finally:
-                self.cancel_requested = False
-            return run_id
+            return await self._run_queue_item(item)
+
+    async def run_queue_item(self, queue_id: int) -> int | None:
+        if self.lock.locked():
+            return None
+        async with self.lock:
+            item = self.db.queue_item(queue_id)
+            if not item or item["state"] not in ("plan_ready", "queued"):
+                return None
+            return await self._run_queue_item(item)
+
+    async def _run_queue_item(self, item: Any) -> int:
+        self.db.set_queue_state(int(item["id"]), "running")
+        run_id = self.db.create_run(item["ticket_key"])
+        try:
+            await self._run_ticket(run_id, item)
+            self.db.set_queue_state(int(item["id"]), "done")
+        except asyncio.CancelledError:
+            self.db.update_run(run_id, state="cancelled", error="cancelled", finished_at=datetime.utcnow().isoformat())
+            self.db.add_notification("Run cancelled", item["ticket_key"], "warning", run_id)
+            self.db.set_queue_state(int(item["id"]), "cancelled")
+        except Exception as exc:
+            friendly = self._friendly_error(str(exc))
+            self._log(run_id, "error", friendly)
+            self.db.update_run(run_id, state="failed", error=friendly, finished_at=datetime.utcnow().isoformat())
+            self.db.add_notification("Run failed", f"{item['ticket_key']}: {friendly}", "error", run_id)
+            self.db.set_queue_state(int(item["id"]), "failed")
+        finally:
+            self.cancel_requested = False
+        return run_id
+
+    async def prepare_queue_item(self, queue_id: int, user_notes: str = "") -> int:
+        item = self.db.queue_item(queue_id)
+        if not item:
+            raise RuntimeError("Queue item not found")
+        if item["state"] == "running":
+            raise RuntimeError("Cannot revise a running item")
+        self.db.set_queue_state(queue_id, "planning")
+        self.claude = ClaudeRunner(self.config, lambda phase, line: print(f"[{phase}] {line}"))
+        existing = self.db.plan_for_queue_item(queue_id)
+        previous = ""
+        if existing:
+            previous = f"Mission:\n{existing['mission']}\n\nPlan:\n{existing['plan_text']}"
+        output = await self.claude.run_prompt(
+            "plan",
+            planning_prompt(
+                dict(item),
+                self.config.git.default_repo_url,
+                self.config.git.default_base_branch,
+                previous,
+                user_notes,
+            ),
+        )
+        parsed = parse_plan(output)
+        repo_url = parsed["repo_url"] or self.config.git.default_repo_url
+        base_branch = parsed["base_branch"] or self.config.git.default_base_branch or "main"
+        summary = parsed["summary"] or item["summary"] or "work"
+        branch = branch_name(item["ticket_key"], summary)
+        plan_id = self.db.upsert_ticket_plan(
+            {
+                "ticket_key": item["ticket_key"],
+                "queue_item_id": queue_id,
+                "state": "draft",
+                "repo_url": repo_url,
+                "base_branch": base_branch,
+                "branch_name": branch,
+                "mission": parsed["mission"] or item["summary"],
+                "plan_text": parsed["plan_text"] or "Claude did not provide a detailed plan.",
+                "user_notes": user_notes,
+                "raw_output": output,
+            }
+        )
+        self.db.set_queue_state(queue_id, "plan_ready")
+        self.db.add_notification("Plan ready", item["ticket_key"], "info")
+        return plan_id
 
     async def _run_ticket(self, run_id: int, item: Any) -> None:
         ticket = dict(item)
+        queue_id = int(ticket["id"])
+        plan = self.db.plan_for_queue_item(queue_id)
         self.db.update_run(run_id, state="preparing_git", progress=5)
         self.claude = ClaudeRunner(self.config, lambda phase, line: self._log(run_id, phase, line))
 
-        self.db.upsert_sub_agent(run_id, "claude-discovery", "Pick repo, base branch, and branch summary", "running", 10)
-        discovery_output = await self.claude.run_prompt(
-            "discover",
-            discovery_prompt(
-                ticket,
-                self.config.git.default_repo_url,
-                self.config.git.default_base_branch,
-            ),
-        )
-        discovery = parse_discovery(discovery_output)
-        if not discovery["repo_url"]:
-            discovery["repo_url"] = self.config.git.default_repo_url
+        if plan:
+            discovery = {
+                "repo_url": plan["repo_url"],
+                "base_branch": plan["base_branch"],
+                "summary": plan["mission"] or ticket.get("summary", "work"),
+            }
+            branch = plan["branch_name"]
+            self._log(run_id, "plan", f"Approved mission: {plan['mission']}")
+            self._log(run_id, "plan", f"Repo: {plan['repo_url']} Base: {plan['base_branch']} Branch: {plan['branch_name']}")
+        else:
+            self.db.upsert_sub_agent(run_id, "claude-discovery", "Pick repo, base branch, and branch summary", "running", 10)
+            discovery_output = await self.claude.run_prompt(
+                "discover",
+                discovery_prompt(
+                    ticket,
+                    self.config.git.default_repo_url,
+                    self.config.git.default_base_branch,
+                ),
+            )
+            discovery = parse_discovery(discovery_output)
+            if not discovery["repo_url"]:
+                discovery["repo_url"] = self.config.git.default_repo_url
+            if not discovery["base_branch"]:
+                discovery["base_branch"] = self.config.git.default_base_branch or "main"
+            summary = discovery["summary"] or ticket.get("summary", "work")
+            branch = branch_name(ticket["ticket_key"], summary)
+            self.db.upsert_sub_agent(run_id, "claude-discovery", "Pick repo, base branch, and branch summary", "done", 100, branch)
         if not discovery["repo_url"]:
             raise RuntimeError("Claude discovery did not provide repo_url and git.default_repo_url is not configured")
-        if not discovery["base_branch"]:
-            discovery["base_branch"] = self.config.git.default_base_branch or "main"
-        summary = discovery["summary"] or ticket.get("summary", "work")
-        branch = branch_name(ticket["ticket_key"], summary)
-        self.db.upsert_sub_agent(run_id, "claude-discovery", "Pick repo, base branch, and branch summary", "done", 100, branch)
         self.db.update_run(
             run_id,
             repo_url=discovery["repo_url"],
@@ -140,7 +212,10 @@ class Worker:
 
         self._raise_if_cancelled()
         self.db.update_run(run_id, state="running_claude", progress=30)
-        impl_prompt = implementation_prompt(ticket, branch) + self._consume_agent_inputs(run_id)
+        plan_context = ""
+        if plan:
+            plan_context = f"\n\nApproved mission:\n{plan['mission']}\n\nApproved plan:\n{plan['plan_text']}\n"
+        impl_prompt = implementation_prompt(ticket, branch) + plan_context + self._consume_agent_inputs(run_id)
         self.db.upsert_sub_agent(run_id, "claude-implementation", "Implement the Jira ticket", "running", 30)
         impl_output = await self.claude.run_prompt("claude", impl_prompt, cwd=repo_path)
         self.db.upsert_sub_agent(run_id, "claude-implementation", "Implement the Jira ticket", "done", 100)
@@ -150,6 +225,11 @@ class Worker:
             self._log(run_id, "git", "Working tree changes after Claude:")
             for line in git_status.splitlines():
                 self._log(run_id, "git", line)
+            self.db.update_run(
+                run_id,
+                changed_files=self.git.changed_files(repo_path),
+                diff_summary=self.git.diff_stat(repo_path),
+            )
         else:
             self._log(run_id, "git", "No file changes detected after Claude implementation.")
             raise RuntimeError("Claude finished without changing files")
@@ -167,7 +247,24 @@ class Worker:
             await self.run_cr_fix(run_id)
         else:
             final_state = "needs_cr_fix" if needs_fix else "done"
-            self.db.update_run(run_id, state=final_state, progress=100, finished_at=datetime.utcnow().isoformat())
+            commit_sha = ""
+            commit_message = ""
+            if not needs_fix:
+                commit_message = f"{ticket['ticket_key']}: {ticket.get('summary', 'Implement ticket')}"
+                self._log(run_id, "git", f"Committing changes: {commit_message}")
+                self.git.commit_all(repo_path, commit_message)
+                commit_sha = self.git.head_sha(repo_path)
+                self._log(run_id, "git", f"Commit created: {commit_sha}")
+            report = self._run_report(ticket, discovery, branch, review_output, final_state, commit_sha)
+            self.db.update_run(
+                run_id,
+                state=final_state,
+                progress=100,
+                commit_sha=commit_sha,
+                commit_message=commit_message,
+                run_report=report,
+                finished_at=datetime.utcnow().isoformat(),
+            )
             if needs_fix:
                 self.db.add_notification("Run needs CR fix", ticket["ticket_key"], "warning", run_id)
             else:
@@ -187,11 +284,32 @@ class Worker:
         await self.claude.run_prompt("cr-fix", fix_prompt, cwd=run["workspace_path"])
         self.db.upsert_sub_agent(run_id, "claude-cr-fix", "Fix review findings", "done", 100)
         review_output = await self.claude.run_prompt("review", review_prompt(dict(ticket)), cwd=run["workspace_path"])
+        repo_path = Path(run["workspace_path"])
+        changed_files = self.git.changed_files(repo_path)
+        diff_summary = self.git.diff_stat(repo_path)
+        commit_message = f"{run['ticket_key']}: Address review findings"
+        self._log(run_id, "git", f"Committing CR fix changes: {commit_message}")
+        self.git.commit_all(repo_path, commit_message)
+        commit_sha = self.git.head_sha(repo_path)
+        self._log(run_id, "git", f"Commit created: {commit_sha}")
+        report = self._run_report(
+            dict(ticket),
+            {"repo_url": run["repo_url"], "base_branch": run["base_branch"]},
+            run["branch_name"],
+            review_output,
+            "done",
+            commit_sha,
+        )
         self.db.update_run(
             run_id,
             review_output=review_output,
             state="done",
             progress=100,
+            changed_files=changed_files,
+            diff_summary=diff_summary,
+            commit_sha=commit_sha,
+            commit_message=commit_message,
+            run_report=report,
             finished_at=datetime.utcnow().isoformat(),
         )
         self.db.add_notification("CR fix finished", run["ticket_key"], "success", run_id)
@@ -202,6 +320,10 @@ class Worker:
             raise RuntimeError("Run not found")
         if run["state"] not in ("done", "needs_cr_fix", "pushed"):
             raise RuntimeError("Run must be done before pushing")
+        if run["state"] == "needs_cr_fix":
+            raise RuntimeError("Run still needs CR fix before pushing")
+        if not run["commit_sha"]:
+            raise RuntimeError("Run has no commit. Open the run report before pushing.")
         output = self.git.push_branch(Path(run["workspace_path"]), run["branch_name"])
         self.db.update_run(run_id, state="pushed", pushed_at=datetime.utcnow().isoformat())
         self._log(run_id, "git", output or "pushed")
@@ -259,6 +381,38 @@ class Worker:
             "::code-comment",
         ]
         return any(phrase in lower for phrase in finding_phrases)
+
+    @staticmethod
+    def _friendly_error(message: str) -> str:
+        lower = message.lower()
+        if "authentication failed" in lower or "permission denied" in lower:
+            return "Git authentication failed. Check SSH keys or Git token settings."
+        if "could not read from remote repository" in lower:
+            return "Git could not read the remote repository. Check repo URL and access."
+        if "claude timed out" in lower:
+            return "Claude timed out before finishing."
+        if "claude exited" in lower:
+            return message
+        if "without changing files" in lower:
+            return "Claude finished without changing files. Review the ticket/plan and rerun."
+        return message
+
+    @staticmethod
+    def _run_report(ticket: dict[str, Any], discovery: dict[str, str], branch: str, review: str, state: str, commit_sha: str) -> str:
+        ticket_key = ticket.get("ticket_key") or ticket.get("key") or ""
+        return "\n".join(
+            [
+                f"Ticket: {ticket_key}",
+                f"State: {state}",
+                f"Repo: {discovery.get('repo_url', '')}",
+                f"Base branch: {discovery.get('base_branch', '')}",
+                f"Work branch: {branch}",
+                f"Commit: {commit_sha or 'not created'}",
+                "",
+                "Review:",
+                review,
+            ]
+        )
 
     @staticmethod
     def _progress_from_line(line: str) -> int | None:

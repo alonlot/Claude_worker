@@ -93,6 +93,20 @@ def parse_discovery(output: str) -> dict[str, str]:
     }
 
 
+def parse_plan(output: str) -> dict[str, str]:
+    match = re.search(r"\{.*\}", output, re.DOTALL)
+    if not match:
+        raise ValueError("Claude did not return JSON plan data")
+    data = json.loads(match.group(0))
+    return {
+        "repo_url": str(data.get("repo_url", "")).strip(),
+        "base_branch": str(data.get("base_branch", "")).strip(),
+        "summary": str(data.get("summary", data.get("branch_summary", ""))).strip(),
+        "mission": str(data.get("mission", "")).strip(),
+        "plan_text": str(data.get("plan_text", data.get("plan", ""))).strip(),
+    }
+
+
 def discovery_prompt(ticket: dict[str, str], default_repo_url: str = "", default_base_branch: str = "main") -> str:
     default_repo = default_repo_url or "unknown"
     default_base = default_base_branch or "main"
@@ -113,6 +127,44 @@ Status: {ticket.get('status', '')}
 URL: {ticket.get('url', '')}
 Description:
 {ticket.get('description', '')}
+"""
+
+
+def planning_prompt(
+    ticket: dict[str, str],
+    default_repo_url: str = "",
+    default_base_branch: str = "main",
+    previous_plan: str = "",
+    user_notes: str = "",
+) -> str:
+    return f"""
+You are preparing a human-approved build plan for a Jira automation worker.
+Return only JSON with keys: repo_url, base_branch, summary, mission, plan_text.
+
+The Python worker owns every Git command. Claude must not clone, checkout, commit, push, rebase, merge, reset, or run Git.
+Use this configured default repo_url unless the ticket or user notes explicitly say otherwise:
+{default_repo_url or "unknown"}
+Use this configured default base_branch unless the ticket or user notes explicitly say otherwise:
+{default_base_branch or "main"}
+
+mission: explain in plain language what you think the ticket asks you to build.
+plan_text: concise implementation plan, risks, likely files/areas, validation approach, and any assumptions.
+summary: short branch-safe phrase for Python to create the final branch name.
+
+If user_notes are provided, revise the previous plan to reflect them and return the full updated plan.
+
+Ticket: {ticket['key']}
+Title: {ticket.get('summary', '')}
+Status: {ticket.get('status', '')}
+URL: {ticket.get('url', '')}
+Description:
+{ticket.get('description', '')}
+
+Previous plan:
+{previous_plan}
+
+User requested changes:
+{user_notes}
 """
 
 

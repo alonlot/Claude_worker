@@ -692,7 +692,41 @@ code {
   padding: 12px;
   background: #fbfcfe;
 }
-.queue li { cursor: grab; grid-template-columns: 120px 1fr auto; align-items: center; }
+.queue li { cursor: grab; grid-template-columns: 170px minmax(0, 1fr) auto; align-items: start; }
+.queue-plan {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.queue-plan details {
+  color: var(--muted);
+}
+.queue-plan p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+.queue-actions {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+.start-drop {
+  display: grid;
+  place-items: center;
+  min-height: 54px;
+  border: 1px dashed #9bbcf0;
+  border-radius: 8px;
+  background: #f2f7ff;
+  color: #184f9f;
+  font-size: 13px;
+  font-weight: 800;
+  margin-bottom: 12px;
+}
+.start-drop.active {
+  border-color: var(--accent);
+  background: #e7f0ff;
+  box-shadow: inset 0 0 0 2px rgba(23, 105, 224, 0.18);
+}
 .ticket { font-weight: 800; }
 .pill {
   display: inline-flex;

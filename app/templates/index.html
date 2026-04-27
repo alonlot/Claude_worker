@@ -3,7 +3,7 @@
 <section class="actions">
   <form method="post" action="/jira/scan"><button>Scan Jira</button></form>
   <form method="post" action="/dry-run/enqueue"><button class="secondary">Add dry-run ticket</button></form>
-  <form method="post" action="/queue/run-once"><button data-loading-text="Starting run...">Run once</button></form>
+  <form method="post" action="/queue/run-once"><button data-loading-text="Starting build...">Build next planned</button></form>
   {% if current %}
   <a class="button-link secondary" href="/runs/{{ current.id }}">Open current ticket studio</a>
   {% endif %}
@@ -37,20 +37,54 @@
 <section class="grid">
   <div class="panel">
     <h2>Queue</h2>
-    <form method="post" action="/queue/reorder">
-      <ol class="queue" id="queue-list">
+    <div class="start-drop" id="start-drop">Drag a planned ticket here to build it now</div>
+    <ol class="queue" id="queue-list">
       {% for item in queue %}
-        <li draggable="true" data-id="{{ item.id }}">
-          <span class="ticket">{{ item.ticket_key }}</span>
-          <span>{{ item.summary }}</span>
-          <span class="pill">{{ item.state }}</span>
+        <li draggable="true" data-id="{{ item.id }}" data-state="{{ item.state }}">
+          <div>
+            <span class="ticket">{{ item.ticket_key }}</span>
+            <small>{{ item.summary }}</small>
+          </div>
+          <div class="queue-plan">
+            {% if item.plan_id %}
+            <strong>{{ item.mission }}</strong>
+            <small>{{ item.repo_url }} @ {{ item.base_branch }}</small>
+            <small>{{ item.branch_name }}</small>
+            <details>
+              <summary>Plan</summary>
+              <p>{{ item.plan_text }}</p>
+            </details>
+            <form method="post" action="/queue/{{ item.id }}/revise" class="stack">
+              <textarea class="compact" name="user_notes" placeholder="Tell Claude what to change in the mission or plan."></textarea>
+              <button class="tiny secondary" data-loading-text="Revising...">Revise plan</button>
+            </form>
+            {% else %}
+            <small>Ask Claude to explain the mission before building.</small>
+            {% endif %}
+          </div>
+          <div class="queue-actions">
+            <span class="pill">{{ item.state }}</span>
+            {% if item.state in ["needs_plan", "failed"] %}
+            <form method="post" action="/queue/{{ item.id }}/prepare"><button class="tiny" data-loading-text="Planning...">Ask Claude</button></form>
+            {% endif %}
+            {% if item.state == "plan_ready" %}
+            <form method="post" action="/queue/{{ item.id }}/build"><button class="tiny" data-loading-text="Starting...">Build</button></form>
+            {% endif %}
+            {% if item.state != "running" %}
+            <form method="post" action="/queue/{{ item.id }}/delete"><button class="tiny secondary">Remove</button></form>
+            {% endif %}
+          </div>
         </li>
       {% else %}
         <li class="empty">No queued tickets.</li>
       {% endfor %}
-      </ol>
+    </ol>
+    <form method="post" action="/queue/reorder">
       <input type="hidden" name="order" id="queue-order">
       <button class="secondary" type="submit">Save order</button>
+    </form>
+    <form method="post" action="/queue/clear-finished">
+      <button class="secondary" type="submit">Clear finished queue items</button>
     </form>
   </div>
 
@@ -108,7 +142,9 @@
           <a class="button-link tiny secondary" href="/runs/{{ run.id }}">Open</a>
           <form method="post" action="/tickets/{{ run.ticket_key }}/rerun"><button class="tiny secondary">Rerun</button></form>
           {% if run.state in ["done", "needs_cr_fix", "pushed"] %}
+          {% if run.state == "done" and run.commit_sha %}
           <form method="post" action="/runs/{{ run.id }}/push"><button class="tiny" data-loading-text="Pushing...">Push</button></form>
+          {% endif %}
           {% endif %}
           {% if allow_cr_fix and run.review_output %}
           <form method="post" action="/runs/{{ run.id }}/review-fix"><button class="tiny secondary" data-loading-text="Starting CR fix...">Do CR Fix</button></form>

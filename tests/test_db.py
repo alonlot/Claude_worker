@@ -53,3 +53,25 @@ def test_notifications_and_queue_pause_state(tmp_path):
     assert unread[0]["id"] == note_id
     db.mark_notifications_read([note_id])
     assert db.unread_notifications() == []
+
+
+def test_ticket_plan_round_trip(tmp_path):
+    db = Database(tmp_path / "worker.sqlite3")
+    db.init()
+    db.upsert_ticket({"key": "A-1", "summary": "One", "status": "To Do", "eligibility": "eligible"})
+    db.enqueue("A-1")
+    queue_id = db.fetchone("SELECT id FROM queue_items WHERE ticket_key='A-1'")["id"]
+    plan_id = db.upsert_ticket_plan(
+        {
+            "ticket_key": "A-1",
+            "queue_item_id": queue_id,
+            "repo_url": "git@example/repo.git",
+            "base_branch": "main",
+            "branch_name": "A-1/by_claude_one",
+            "mission": "Do one",
+            "plan_text": "Change files",
+        }
+    )
+    plan = db.plan_for_queue_item(queue_id)
+    assert plan["id"] == plan_id
+    assert plan["mission"] == "Do one"

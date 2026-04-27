@@ -1,0 +1,80 @@
+<section class="run-focus" id="run-summary" hx-get="/runs/{{ run.id }}/summary" hx-trigger="every 2s" hx-swap="outerHTML">
+  <div class="panel">
+    <div class="hero-head">
+      <div>
+        <h2>{{ run.ticket_key }}{% if ticket %} - {{ ticket.summary }}{% endif %}</h2>
+        <p>{{ run.state }} - {{ run.progress }}%</p>
+      </div>
+      <div class="row">
+        <a class="button-link secondary" href="/">Dashboard</a>
+        {% if run.state in ["preparing_git", "running_claude", "reviewing"] %}
+        <form method="post" action="/runs/{{ run.id }}/cancel"><button class="danger" data-loading-text="Cancelling...">Cancel</button></form>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if ticket %}
+    <article class="ticket-focus">
+      <div class="ticket-focus-head">
+        <span class="ticket">{{ ticket.key }}</span>
+        <span class="pill">{{ ticket.status }}</span>
+      </div>
+      <h3>{{ ticket.summary }}</h3>
+      <p>{{ ticket.description[:700] }}{% if ticket.description|length > 700 %}...{% endif %}</p>
+    </article>
+    {% endif %}
+
+    <div class="progress"><span style="width: {{ run.progress }}%"></span></div>
+    <div class="meta">
+      <span>{{ run.branch_name or "No branch yet" }}</span>
+      <span>{{ run.workspace_path or "No workspace yet" }}</span>
+    </div>
+    <div class="run-facts">
+      <span><strong>Repo</strong>{{ run.repo_url or "-" }}</span>
+      <span><strong>Base</strong>{{ run.base_branch or "-" }}</span>
+      <span><strong>Branch</strong>{{ run.branch_name or "-" }}</span>
+      <span><strong>Commit</strong>{{ run.commit_sha or "not committed" }}</span>
+      <span><strong>Created</strong>{{ run.created_at }}</span>
+      <span><strong>Finished</strong>{{ run.finished_at or "-" }}</span>
+    </div>
+    {% if run.error %}
+    <div class="inline-alert error-alert">{{ run.error }}</div>
+    {% endif %}
+    {% if run.changed_files %}
+    <details class="review-box">
+      <summary>Changed Files</summary>
+      <pre>{{ run.changed_files }}</pre>
+    </details>
+    {% endif %}
+    {% if run.diff_summary %}
+    <details class="review-box">
+      <summary>Diff Summary</summary>
+      <pre>{{ run.diff_summary }}</pre>
+    </details>
+    {% endif %}
+    {% if run.review_output %}
+    <details class="review-box" open>
+      <summary>Review Output</summary>
+      <pre>{{ run.review_output }}</pre>
+    </details>
+    {% endif %}
+    {% if run.run_report %}
+    <details class="review-box">
+      <summary>Run Report</summary>
+      <pre>{{ run.run_report }}</pre>
+    </details>
+    {% endif %}
+    <div class="row detail-actions">
+      {% if run.state == "done" and run.commit_sha %}
+      <form method="post" action="/runs/{{ run.id }}/push"><button data-loading-text="Pushing...">Push committed branch</button></form>
+      {% endif %}
+      {% if run.state == "needs_cr_fix" %}
+      <span class="pill warn">CR fix required before push</span>
+      {% endif %}
+      {% if run.review_output %}
+      <form method="post" action="/runs/{{ run.id }}/review-fix"><button class="secondary" data-loading-text="Starting CR fix...">Do CR Fix</button></form>
+      {% endif %}
+      <form method="post" action="/tickets/{{ run.ticket_key }}/rerun"><button class="secondary">Rerun ticket</button></form>
+    </div>
+  </div>
+</section>

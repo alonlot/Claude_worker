@@ -57,6 +57,19 @@ class GitOps:
     def status(self, repo_path: str | Path) -> str:
         return self.run(["git", "status", "--short"], cwd=repo_path)
 
+    def diff_stat(self, repo_path: str | Path) -> str:
+        return self.run(["git", "diff", "--stat"], cwd=repo_path)
+
+    def changed_files(self, repo_path: str | Path) -> str:
+        return self.run(["git", "diff", "--name-only"], cwd=repo_path)
+
+    def commit_all(self, repo_path: str | Path, message: str) -> str:
+        self.run(["git", "add", "-A"], cwd=repo_path)
+        return self.run(["git", "commit", "-m", message], cwd=repo_path)
+
+    def head_sha(self, repo_path: str | Path) -> str:
+        return self.run(["git", "rev-parse", "HEAD"], cwd=repo_path)
+
     def has_commits_ahead(self, repo_path: str | Path, base_branch: str) -> bool:
         base = base_branch or self.default_branch(repo_path)
         count = self.run(

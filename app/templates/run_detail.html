@@ -1,63 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="run-focus">
-  <div class="panel">
-    <div class="hero-head">
-      <div>
-        <h2>{{ run.ticket_key }}{% if ticket %} - {{ ticket.summary }}{% endif %}</h2>
-        <p>{{ run.state }} - {{ run.progress }}%</p>
-      </div>
-      <div class="row">
-        <a class="button-link secondary" href="/">Dashboard</a>
-        {% if run.state in ["preparing_git", "running_claude", "reviewing"] %}
-        <form method="post" action="/runs/{{ run.id }}/cancel"><button class="danger" data-loading-text="Cancelling...">Cancel</button></form>
-        {% endif %}
-      </div>
-    </div>
-
-    {% if ticket %}
-    <article class="ticket-focus">
-      <div class="ticket-focus-head">
-        <span class="ticket">{{ ticket.key }}</span>
-        <span class="pill">{{ ticket.status }}</span>
-      </div>
-      <h3>{{ ticket.summary }}</h3>
-      <p>{{ ticket.description[:700] }}{% if ticket.description|length > 700 %}...{% endif %}</p>
-    </article>
-    {% endif %}
-
-    <div class="progress"><span style="width: {{ run.progress }}%"></span></div>
-    <div class="meta">
-      <span>{{ run.branch_name or "No branch yet" }}</span>
-      <span>{{ run.workspace_path or "No workspace yet" }}</span>
-    </div>
-    <div class="run-facts">
-      <span><strong>Repo</strong>{{ run.repo_url or "-" }}</span>
-      <span><strong>Base</strong>{{ run.base_branch or "-" }}</span>
-      <span><strong>Created</strong>{{ run.created_at }}</span>
-      <span><strong>Finished</strong>{{ run.finished_at or "-" }}</span>
-    </div>
-    {% if run.error %}
-    <div class="inline-alert error-alert">{{ run.error }}</div>
-    {% endif %}
-    {% if run.review_output %}
-    <details class="review-box" open>
-      <summary>Review Output</summary>
-      <pre>{{ run.review_output }}</pre>
-    </details>
-    {% endif %}
-    <div class="row detail-actions">
-      {% if run.state in ["done", "needs_cr_fix", "pushed"] %}
-      <form method="post" action="/runs/{{ run.id }}/push"><button data-loading-text="Pushing...">Push branch</button></form>
-      {% endif %}
-      {% if run.review_output %}
-      <form method="post" action="/runs/{{ run.id }}/review-fix"><button class="secondary" data-loading-text="Starting CR fix...">Do CR Fix</button></form>
-      {% endif %}
-      <form method="post" action="/tickets/{{ run.ticket_key }}/rerun"><button class="secondary">Rerun ticket</button></form>
-    </div>
-  </div>
-
-</section>
+{% include "_run_summary.html" %}
 
 <section class="panel execution-studio">
   <div class="execution-head">

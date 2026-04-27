@@ -1,5 +1,6 @@
 const list = document.querySelector("#queue-list");
 const orderInput = document.querySelector("#queue-order");
+const startDrop = document.querySelector("#start-drop");
 let dragged = null;
 
 function syncOrder() {
@@ -22,6 +23,34 @@ if (list) {
   });
   list.addEventListener("drop", syncOrder);
   syncOrder();
+}
+
+if (startDrop) {
+  startDrop.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    startDrop.classList.add("active");
+  });
+  startDrop.addEventListener("dragleave", () => startDrop.classList.remove("active"));
+  startDrop.addEventListener("drop", async (event) => {
+    event.preventDefault();
+    startDrop.classList.remove("active");
+    if (!dragged || !dragged.dataset.id) return;
+    if (dragged.dataset.state !== "plan_ready") {
+      announce("Ask Claude for a plan first");
+      return;
+    }
+    try {
+      const response = await fetch(`/queue/${dragged.dataset.id}/build`, { method: "POST" });
+      if (response.ok) {
+        announce("Build started");
+        window.setTimeout(() => window.location.reload(), 350);
+      } else {
+        announce("Could not start build");
+      }
+    } catch {
+      announce("Network error");
+    }
+  });
 }
 
 async function pollNotifications() {
