@@ -316,23 +316,48 @@ def create_app(config: Config, db: Database) -> FastAPI:
         request: Request,
         source_url: str = Form(""),
         auto_cr: str | None = Form(None),
+        auto_cr_state: str = Form(""),
+        comment_back_state: str = Form(""),
         scan_mode: str = Form("both"),
     ):
+        auto_cr_on = auto_cr == "on" or auto_cr_state == "1"
+        if comment_back_state in {"0", "1"}:
+            db.set_state(f"comment_back:{run_id}", comment_back_state)
         request.app.state.flash = do_code_review_scan(
             run_id,
             source_url,
-            auto_cr == "on",
+            auto_cr_on,
             scan_mode,
         )
         return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 
     @app.post("/runs/{run_id}/code-review/scan-notes")
-    async def scan_code_review_notes_only(run_id: int, request: Request, source_url: str = Form(""), auto_cr: str | None = Form(None)):
-        request.app.state.flash = do_code_review_scan(run_id, source_url, auto_cr == "on", "notes")
+    async def scan_code_review_notes_only(
+        run_id: int,
+        request: Request,
+        source_url: str = Form(""),
+        auto_cr: str | None = Form(None),
+        auto_cr_state: str = Form(""),
+        comment_back_state: str = Form(""),
+    ):
+        auto_cr_on = auto_cr == "on" or auto_cr_state == "1"
+        if comment_back_state in {"0", "1"}:
+            db.set_state(f"comment_back:{run_id}", comment_back_state)
+        request.app.state.flash = do_code_review_scan(run_id, source_url, auto_cr_on, "notes")
         return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 
     @app.post("/runs/{run_id}/code-review/scan-ci")
-    async def scan_code_review_ci_only(run_id: int, request: Request, source_url: str = Form("")):
+    async def scan_code_review_ci_only(
+        run_id: int,
+        request: Request,
+        source_url: str = Form(""),
+        auto_cr_state: str = Form(""),
+        comment_back_state: str = Form(""),
+    ):
+        if auto_cr_state in {"0", "1"}:
+            db.set_state(f"auto_cr:{run_id}", auto_cr_state)
+        if comment_back_state in {"0", "1"}:
+            db.set_state(f"comment_back:{run_id}", comment_back_state)
         request.app.state.flash = do_code_review_scan(run_id, source_url, False, "ci")
         return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 

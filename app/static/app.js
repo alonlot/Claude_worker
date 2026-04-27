@@ -521,12 +521,32 @@ function initCodeReviewAutoScan(root = document) {
   window.addEventListener("beforeunload", () => window.clearInterval(intervalId), { once: true });
 }
 
+function initCodeReviewCheckboxSync(root = document) {
+  const autoCr = root.querySelector("#review-auto-cr");
+  const commentBack = root.querySelector("#review-comment-back");
+  const autoCrState = root.querySelector("#review-auto-cr-state");
+  const commentBackState = root.querySelector("#review-comment-back-state");
+  if (!autoCr || !commentBack || !autoCrState || !commentBackState) return;
+  if (autoCr.dataset.syncBound === "1") return;
+  autoCr.dataset.syncBound = "1";
+
+  const sync = () => {
+    autoCrState.value = autoCr.checked ? "1" : "0";
+    commentBackState.value = commentBack.checked ? "1" : "0";
+  };
+
+  autoCr.addEventListener("change", sync);
+  commentBack.addEventListener("change", sync);
+  sync();
+}
+
 bindBusyButtons(document);
 initDashboardQueue(document);
 initFollowLogs(document);
 initLiveLogsPolling(document);
 initWebIde(document);
 initCodeReviewAutoScan(document);
+initCodeReviewCheckboxSync(document);
 document.addEventListener("htmx:afterSwap", (event) => {
   const root = event.target instanceof Element ? event.target : document;
   bindBusyButtons(root);
@@ -535,6 +555,7 @@ document.addEventListener("htmx:afterSwap", (event) => {
   initLiveLogsPolling(document);
   initWebIde(document);
   initCodeReviewAutoScan(document);
+  initCodeReviewCheckboxSync(document);
   if (event.target && event.target.id === "run-interaction") {
     announce("Updated");
   }

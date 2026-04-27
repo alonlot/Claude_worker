@@ -271,11 +271,17 @@ def test_code_review_checkbox_preferences_persist(tmp_path):
 
     set_scan_pref = client.post(
         f"/runs/{run_id}/code-review/scan",
-        data={"source_url": "https://github.com/alonlot/Claude_worker/pull/101", "scan_mode": "notes"},
+        data={
+            "source_url": "https://github.com/alonlot/Claude_worker/pull/101",
+            "scan_mode": "notes",
+            "auto_cr_state": "0",
+            "comment_back_state": "0",
+        },
         follow_redirects=False,
     )
     assert set_scan_pref.status_code == 303
     assert db.get_state(f"auto_cr:{run_id}", "1") == "0"
+    assert db.get_state(f"comment_back:{run_id}", "1") == "0"
 
     set_comment_back = client.post(
         f"/runs/{run_id}/code-review/fix",
