@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import shlex
 import subprocess
@@ -16,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import Config, load_config_data, load_config_text, save_config_text, write_config_data
-from app.code_review import scan_review_notes, suggest_review_url
+from app.code_review import scan_ci_jobs, scan_review_notes, suggest_review_url
 from app.db import Database
 from app.runner import Worker
 from app.utils import ensure_child_path
@@ -260,6 +261,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             return RedirectResponse("/", status_code=303)
         detail["review_notes"] = db.code_review_notes(run_id)
         detail["auto_cr"] = db.get_state(f"auto_cr:{run_id}", "0") == "1"
+        detail["ci_jobs"] = parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", ""))
         detail["suggested_review_url"] = suggest_review_url(detail["run"]["repo_url"], detail["run"]["branch_name"])
         return templates.TemplateResponse(request, "code_review.html", detail)
 
@@ -274,10 +276,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
             notes = scan_review_notes(source_url)
             for note in notes:
                 db.upsert_code_review_note(run_id, note)
+            ci_jobs = scan_ci_jobs(source_url)
+            db.set_state(f"ci_jobs:{run_id}", json.dumps(ci_jobs))
             request.app.state.flash = f"Scanned {len(notes)} code review note(s)."
             if auto_cr == "on" and notes:
                 spawn_tracked_task(
-                    worker.run_external_code_review_fix(run_id),
+                    worker.run_external_code_review_fix(run_id, ci_context=render_ci_context(ci_jobs)),
                     db,
                     title="Auto CR failed",
                     message=f"Auto code-review fix crashed for run #{run_id}.",
@@ -288,7 +292,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
         return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 
     @app.post("/runs/{run_id}/code-review/fix")
-    async def fix_code_review(run_id: int, request: Request, user_notes: str = Form(""), comment_back: str | None = Form(None)):
+    async def fix_code_review(
+        run_id: int,
+        request: Request,
+        user_notes: str = Form(""),
+        comment_back: str | None = Form(None),
+    ):
         spawn_tracked_task(
             worker.run_external_code_review_fix(run_id, user_notes.strip(), comment_back == "on"),
             db,
@@ -297,6 +306,23 @@ def create_app(config: Config, db: Database) -> FastAPI:
             run_id=run_id,
         )
         request.app.state.flash = "Code review fix started."
+        return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
+
+    @app.post("/runs/{run_id}/code-review/fix-ci")
+    async def fix_ci_jobs(run_id: int, request: Request, user_notes: str = Form("")):
+        ci_jobs = parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", ""))
+        ci_context = render_ci_context(ci_jobs)
+        if not ci_context:
+            request.app.state.flash = "No CI jobs available. Scan review first."
+            return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
+        spawn_tracked_task(
+            worker.run_ci_fix(run_id, ci_context, user_notes.strip()),
+            db,
+            title="CI fix failed",
+            message=f"CI fix crashed for run #{run_id}.",
+            run_id=run_id,
+        )
+        request.app.state.flash = "CI fix started."
         return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 
     @app.get("/runs/{run_id}/summary", response_class=HTMLResponse)
@@ -375,7 +401,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
             file_path = safe_workspace_file(run, path)
             if file_path.stat().st_size > 1_000_000:
                 return JSONResponse({"error": "File is too large to edit in the browser."}, status_code=400)
-            return JSONResponse({"path": path, "content": file_path.read_text(encoding="utf-8", errors="replace")})
+            content = file_path.read_text(encoding="utf-8", errors="replace")
+            original_content = ""
+            if run and run["workspace_path"]:
+                original_content = git_head_file(run["workspace_path"], path)
+            return JSONResponse({"path": path, "content": content, "original_content": original_content})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
 
@@ -621,6 +651,7 @@ def run_detail_context(request: Request, db: Database, config: Config, run_id: i
         "ide_url": build_ide_url(run_id, run),
         "review_notes": db.code_review_notes(run_id),
         "timeline": run_timeline(db, run_id, run),
+        "log_markers": run_log_markers(db, run_id),
     }
     return data
 
@@ -659,9 +690,41 @@ def run_timeline(db: Database, run_id: int, run) -> list[dict[str, str]]:
         """,
         (run_id,),
     )
-    for row in phase_rows:
-        items.append({"time": row["first_seen"], "title": f"{row['phase']} logs", "detail": "First log entry in this phase."})
+    for index, row in enumerate(phase_rows):
+        end_time = run["finished_at"] or run["updated_at"] or row["first_seen"]
+        if index + 1 < len(phase_rows):
+            end_time = phase_rows[index + 1]["first_seen"] or end_time
+        items.append(
+            {
+                "time": row["first_seen"],
+                "title": f"{row['phase']} logs",
+                "detail": f"Duration {duration_text(row['first_seen'], end_time)}",
+                "anchor": phase_anchor(str(row["phase"])),
+            }
+        )
     return sorted(items, key=lambda item: item["time"] or "")
+
+
+def run_log_markers(db: Database, run_id: int) -> list[dict[str, str]]:
+    rows = db.fetchall(
+        """
+        SELECT phase, MIN(created_at) AS started_at, COUNT(*) AS line_count
+        FROM logs
+        WHERE run_id=?
+        GROUP BY phase
+        ORDER BY started_at
+        """,
+        (run_id,),
+    )
+    return [
+        {
+            "phase": str(row["phase"]),
+            "started_at": str(row["started_at"] or ""),
+            "line_count": str(row["line_count"] or "0"),
+            "anchor": phase_anchor(str(row["phase"])),
+        }
+        for row in rows
+    ]
 
 
 def run_interaction_context(db: Database, run_id: int) -> dict:
@@ -750,6 +813,81 @@ def safe_workspace_file(run, relative_path: str) -> Path:
     if not path.exists() or not path.is_file():
         raise ValueError("File does not exist in workspace")
     return path
+
+
+def git_head_file(workspace_path: str, relative_path: str) -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "show", f"HEAD:{relative_path}"],
+            cwd=workspace_path,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except Exception:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout
+
+
+def parse_ci_jobs(raw: str) -> list[dict[str, str]]:
+    if not raw.strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    rows: list[dict[str, str]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "name": str(item.get("name") or ""),
+                "status": str(item.get("status") or ""),
+                "conclusion": str(item.get("conclusion") or ""),
+                "details_url": str(item.get("details_url") or ""),
+                "summary": str(item.get("summary") or ""),
+                "text": str(item.get("text") or ""),
+            }
+        )
+    return rows
+
+
+def render_ci_context(ci_jobs: list[dict[str, str]]) -> str:
+    if not ci_jobs:
+        return ""
+    lines = []
+    for job in ci_jobs:
+        lines.append(
+            f"- {job.get('name', 'job')}: status={job.get('status', '')}, conclusion={job.get('conclusion', '')}, summary={job.get('summary', '')}"
+        )
+    return "\n".join(lines)
+
+
+def phase_anchor(phase: str) -> str:
+    clean = "".join(ch.lower() if ch.isalnum() else "-" for ch in phase).strip("-")
+    while "--" in clean:
+        clean = clean.replace("--", "-")
+    return f"log-{clean or 'phase'}"
+
+
+def duration_text(start: str | None, end: str | None) -> str:
+    if not start or not end:
+        return "-"
+    try:
+        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except ValueError:
+        return "-"
+    total_seconds = int(max(0, (end_dt - start_dt).total_seconds()))
+    minutes, seconds = divmod(total_seconds, 60)
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
 
 
 async def run_connection_test(target: str, config: Config) -> str:

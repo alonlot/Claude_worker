@@ -57,6 +57,25 @@
   </div>
 
   <div class="panel">
+    <h2>CI Jobs</h2>
+    <div class="list compact-list">
+      {% for job in ci_jobs %}
+      <article>
+        <div class="ticket-focus-head">
+          <strong>{{ job.name }}</strong>
+          <span class="pill">{{ job.status }}{% if job.conclusion %} / {{ job.conclusion }}{% endif %}</span>
+        </div>
+        {% if job.summary %}<span>{{ job.summary }}</span>{% endif %}
+        {% if job.text %}<small>{{ job.text[:280] }}{% if job.text|length > 280 %}...{% endif %}</small>{% endif %}
+        {% if job.details_url %}<small><a class="text-link" href="{{ job.details_url }}" target="_blank" rel="noopener noreferrer">Open job details</a></small>{% endif %}
+      </article>
+      {% else %}
+      <p class="empty">No CI jobs scanned yet. Run Scan Review first.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
     <h2>Do CR</h2>
     <form method="post" action="/runs/{{ run.id }}/code-review/fix" class="stack">
       <label>User notes for Claude
@@ -70,6 +89,19 @@
     </form>
     <div class="inline-alert">
       The worker reads review notes and may comment back. It does not resolve notes, approve, merge, close, or change review state.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Fix CI</h2>
+    <form method="post" action="/runs/{{ run.id }}/code-review/fix-ci" class="stack">
+      <label>User notes for Claude (optional)
+        <textarea class="compact message-box" name="user_notes" placeholder="Extra guidance for addressing failing CI jobs."></textarea>
+      </label>
+      <button data-loading-text="Starting CI fix...">Fix CI</button>
+    </form>
+    <div class="inline-alert">
+      This action uses scanned CI job status/output as context. Run Scan Review first so CI data is available.
     </div>
   </div>
 </section>

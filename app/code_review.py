@@ -67,6 +67,15 @@ def scan_review_notes(url: str) -> list[dict[str, Any]]:
     raise CodeReviewError("Unsupported review provider")
 
 
+def scan_ci_jobs(url: str) -> list[dict[str, Any]]:
+    source = parse_review_url(url)
+    if source.provider == "github":
+        return _scan_github_ci(source)
+    if source.provider == "gitlab":
+        return _scan_gitlab_ci(source)
+    raise CodeReviewError("Unsupported review provider")
+
+
 def post_review_reply(source_url: str, external_id: str, kind: str, body: str) -> str:
     source = parse_review_url(source_url)
     if source.provider == "gitlab":
@@ -150,6 +159,50 @@ def _scan_gitlab(source: ReviewSource, source_url: str) -> list[dict[str, Any]]:
                 }
             )
     return notes
+
+
+def _scan_github_ci(source: ReviewSource) -> list[dict[str, Any]]:
+    payload = _gh(["api", f"repos/{source.repo}/commits/pulls/{source.number}/check-runs"])
+    data = json.loads(payload or "{}")
+    jobs: list[dict[str, Any]] = []
+    for item in data.get("check_runs", []) or []:
+        jobs.append(
+            {
+                "provider": "github",
+                "name": str(item.get("name") or "check"),
+                "status": str(item.get("status") or ""),
+                "conclusion": str(item.get("conclusion") or ""),
+                "details_url": str(item.get("details_url") or ""),
+                "summary": str(((item.get("output") or {}).get("summary") or "")).strip(),
+                "text": str(((item.get("output") or {}).get("text") or "")).strip(),
+            }
+        )
+    return jobs
+
+
+def _scan_gitlab_ci(source: ReviewSource) -> list[dict[str, Any]]:
+    data = _gitlab_json(f"/projects/{quote(source.repo, safe='')}/merge_requests/{source.number}/pipelines")
+    if not data:
+        return []
+    pipeline = data[0]
+    pipeline_id = pipeline.get("id")
+    if not pipeline_id:
+        return []
+    jobs_data = _gitlab_json(f"/projects/{quote(source.repo, safe='')}/pipelines/{pipeline_id}/jobs")
+    jobs: list[dict[str, Any]] = []
+    for item in jobs_data or []:
+        jobs.append(
+            {
+                "provider": "gitlab",
+                "name": str(item.get("name") or "job"),
+                "status": str(item.get("status") or ""),
+                "conclusion": str(item.get("status") or ""),
+                "details_url": str(item.get("web_url") or ""),
+                "summary": str(item.get("failure_reason") or ""),
+                "text": "",
+            }
+        )
+    return jobs
 
 
 def _post_gitlab_reply(source: ReviewSource, external_id: str, body: str) -> str:

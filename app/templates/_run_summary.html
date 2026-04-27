@@ -47,7 +47,11 @@
         {% for event in timeline %}
         <li>
           <time>{{ event.time }}</time>
+          {% if event.anchor %}
+          <strong><a class="text-link" href="#{{ event.anchor }}">{{ event.title }}</a></strong>
+          {% else %}
           <strong>{{ event.title }}</strong>
+          {% endif %}
           <span>{{ event.detail }}</span>
         </li>
         {% endfor %}

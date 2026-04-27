@@ -332,7 +332,13 @@ class Worker:
         self.db.add_notification("Branch pushed", run["ticket_key"], "success", run_id)
         return output
 
-    async def run_external_code_review_fix(self, run_id: int, user_notes: str = "", comment_back: bool = True) -> None:
+    async def run_external_code_review_fix(
+        self,
+        run_id: int,
+        user_notes: str = "",
+        comment_back: bool = True,
+        ci_context: str = "",
+    ) -> None:
         run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
         ticket = self.db.fetchone("SELECT * FROM tickets WHERE key=?", (run["ticket_key"],)) if run else None
         if not run or not ticket:
@@ -364,6 +370,9 @@ For each review note:
 Additional user instructions:
 {user_notes}
 
+CI status context (if available):
+{ci_context}
+
 Review notes:
 {notes_text}
 
@@ -390,6 +399,46 @@ responses must be an array of objects:
                 self._log(run_id, "cr", f"Commented on review note #{note['id']}")
             self.db.mark_code_review_note_responded(int(note["id"]), response, response_url)
         self.db.add_notification("Code review handled", run["ticket_key"], "success", run_id)
+
+    async def run_ci_fix(self, run_id: int, ci_context: str, user_notes: str = "") -> None:
+        run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+        ticket = self.db.fetchone("SELECT * FROM tickets WHERE key=?", (run["ticket_key"],)) if run else None
+        if not run or not ticket:
+            raise RuntimeError("Run or ticket not found")
+        repo_path = Path(run["workspace_path"] or "")
+        if not run["workspace_path"] or not repo_path.exists():
+            raise RuntimeError("Run workspace does not exist")
+        if not ci_context.strip():
+            raise RuntimeError("No CI context available. Scan review first.")
+        self.claude = ClaudeRunner(self.config, lambda phase, line: self._log(run_id, phase, line))
+        self.db.update_run(run_id, state="running_claude", progress=88)
+        prompt = f"""
+You are fixing CI failures for Jira ticket {ticket['key']}.
+Do not run git commands. Python owns all Git interactions.
+
+CI output:
+{ci_context}
+
+Additional user instructions:
+{user_notes}
+
+Tasks:
+- Identify failing checks/jobs from the CI output.
+- Apply focused code or config fixes in this repository.
+- If CI output is incomplete, make the safest likely fix and explain assumptions in normal output text.
+"""
+        await self.claude.run_prompt("ci-fix", prompt, cwd=repo_path)
+        changed = self.git.status(repo_path)
+        if not changed:
+            raise RuntimeError("CI fix run finished without changes")
+        self.db.update_run(run_id, changed_files=self.git.changed_files(repo_path), diff_summary=self.git.diff_stat(repo_path))
+        commit_message = f"{run['ticket_key']}: Fix CI issues"
+        self._log(run_id, "git", f"Committing CI fixes: {commit_message}")
+        self.git.commit_all(repo_path, commit_message)
+        commit_sha = self.git.head_sha(repo_path)
+        self._log(run_id, "git", f"Commit created: {commit_sha}")
+        self.db.update_run(run_id, commit_sha=commit_sha, commit_message=commit_message, state="done", progress=100)
+        self.db.add_notification("CI fix finished", run["ticket_key"], "success", run_id)
 
     def rerun_ticket(self, ticket_key: str) -> None:
         self.db.enqueue(ticket_key)

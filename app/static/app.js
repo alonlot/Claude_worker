@@ -185,13 +185,121 @@ function initWebIde(root = document) {
   const runId = ide.dataset.runId;
   const fileList = ide.querySelector("#web-ide-file-list");
   const editor = ide.querySelector("#web-ide-content");
+  const editorHost = ide.querySelector("#web-ide-editor-host");
   const current = ide.querySelector("#web-ide-current-file");
   const save = ide.querySelector("#web-ide-save");
   const status = ide.querySelector("#web-ide-status");
+  const diffToggle = ide.querySelector("#web-ide-diff-toggle");
   let activePath = "";
+  let activeOriginalContent = "";
+  let monacoEditor = null;
+  let monacoDiffEditor = null;
+  let monacoOriginalModel = null;
+  let monacoModifiedModel = null;
+  let monacoCodeHost = null;
+  let monacoDiffHost = null;
+
+  const extensionLanguage = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".jsx": "javascript",
+    ".json": "json",
+    ".md": "markdown",
+    ".html": "html",
+    ".css": "css",
+    ".yml": "yaml",
+    ".yaml": "yaml",
+    ".sh": "shell",
+    ".sql": "sql",
+    ".txt": "plaintext",
+  };
 
   const setStatus = (message) => {
     status.textContent = message;
+  };
+
+  const languageForPath = (path) => {
+    const dot = path.lastIndexOf(".");
+    if (dot < 0) return "plaintext";
+    const ext = path.slice(dot).toLowerCase();
+    return extensionLanguage[ext] || "plaintext";
+  };
+
+  const loadMonaco = async () => {
+    if (window.monaco) return window.monaco;
+    if (!window.require || !window.require.config) {
+      const script = document.createElement("script");
+      script.src = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js";
+      await new Promise((resolve, reject) => {
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+      });
+    }
+    window.require.config({ paths: { vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs" } });
+    await new Promise((resolve) => window.require(["vs/editor/editor.main"], resolve));
+    return window.monaco;
+  };
+
+  const ensureMonaco = async () => {
+    if (monacoEditor || monacoDiffEditor) return true;
+    if (!editorHost) return false;
+    try {
+      const monaco = await loadMonaco();
+      monacoCodeHost = document.createElement("div");
+      monacoDiffHost = document.createElement("div");
+      monacoCodeHost.className = "web-ide-monaco";
+      monacoDiffHost.className = "web-ide-monaco";
+      editorHost.textContent = "";
+      editorHost.appendChild(monacoCodeHost);
+      editorHost.appendChild(monacoDiffHost);
+      monacoEditor = monaco.editor.create(monacoCodeHost, {
+        value: "",
+        language: "plaintext",
+        automaticLayout: true,
+        minimap: { enabled: false },
+        scrollBeyondLastLine: false,
+        fontSize: 13,
+      });
+      monacoOriginalModel = monaco.editor.createModel("", "plaintext");
+      monacoModifiedModel = monaco.editor.createModel("", "plaintext");
+      monacoDiffEditor = monaco.editor.createDiffEditor(monacoDiffHost, {
+        automaticLayout: true,
+        renderSideBySide: true,
+        minimap: { enabled: false },
+        readOnly: true,
+      });
+      monacoDiffEditor.setModel({ original: monacoOriginalModel, modified: monacoModifiedModel });
+      monacoDiffHost.style.display = "none";
+      return true;
+    } catch {
+      setStatus("Monaco failed to load; using plain editor");
+      return false;
+    }
+  };
+
+  const setEditorContent = async (path, content, originalContent) => {
+    const hasMonaco = await ensureMonaco();
+    if (!hasMonaco || !window.monaco || !editorHost) {
+      editor.value = content || "";
+      return;
+    }
+    const language = languageForPath(path);
+    monacoModifiedModel.setValue(content || "");
+    window.monaco.editor.setModelLanguage(monacoModifiedModel, language);
+    monacoOriginalModel.setValue(originalContent || "");
+    window.monaco.editor.setModelLanguage(monacoOriginalModel, language);
+    monacoEditor.setModel(monacoModifiedModel);
+    const diffOn = !!(diffToggle && diffToggle.checked);
+    monacoCodeHost.style.display = diffOn ? "none" : "block";
+    monacoDiffHost.style.display = diffOn ? "block" : "none";
+  };
+
+  const getEditorContent = () => {
+    if (monacoModifiedModel) return monacoModifiedModel.getValue();
+    return editor.value;
   };
 
   const loadFile = async (path) => {
@@ -203,8 +311,9 @@ function initWebIde(root = document) {
       return;
     }
     activePath = data.path;
+    activeOriginalContent = data.original_content || "";
     current.textContent = activePath;
-    editor.value = data.content || "";
+    await setEditorContent(activePath, data.content || "", activeOriginalContent);
     save.disabled = false;
     setStatus("Ready");
   };
@@ -245,7 +354,7 @@ function initWebIde(root = document) {
     if (!activePath) return;
     save.disabled = true;
     setStatus("Saving...");
-    const body = new URLSearchParams({ path: activePath, content: editor.value });
+    const body = new URLSearchParams({ path: activePath, content: getEditorContent() });
     const response = await fetch(`/runs/${runId}/workspace/file`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -263,6 +372,13 @@ function initWebIde(root = document) {
   });
 
   loadFiles();
+
+  if (diffToggle) {
+    diffToggle.addEventListener("change", async () => {
+      if (!activePath) return;
+      await setEditorContent(activePath, getEditorContent(), activeOriginalContent);
+    });
+  }
 }
 
 bindBusyButtons(document);

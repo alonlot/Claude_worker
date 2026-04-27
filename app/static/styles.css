@@ -700,6 +700,15 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
   grid-template-rows: auto 1fr auto;
   min-width: 0;
 }
+.tiny-check {
+  font-size: 12px;
+  font-weight: 700;
+  color: #d8e4ff;
+}
+.tiny-check input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+}
 .web-ide-toolbar {
   display: flex;
   justify-content: space-between;
@@ -730,12 +739,34 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
   font-size: 13px;
   line-height: 1.5;
 }
+#web-ide-editor-host {
+  min-height: 540px;
+}
+.web-ide-monaco {
+  min-height: 540px;
+  height: 540px;
+}
 .web-ide-status {
   min-height: 32px;
   border-top: 1px solid #334155;
   padding: 8px 10px;
   color: #91a0ba;
   font-size: 12px;
+}
+.log-markers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+.phase-jumps {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.phase-jump {
+  border-top: 1px solid #334155;
+  padding-top: 8px;
 }
 .table-wrap {
   overflow: auto;

@@ -44,9 +44,17 @@
         <section class="web-ide-editor">
           <div class="web-ide-toolbar">
             <span id="web-ide-current-file">No file selected</span>
-            <button class="tiny secondary" id="web-ide-save" type="button" disabled>Save</button>
+            <div class="row">
+              <label class="check tiny-check">
+                <input type="checkbox" id="web-ide-diff-toggle">
+                Diff vs HEAD
+              </label>
+              <button class="tiny secondary" id="web-ide-save" type="button" disabled>Save</button>
+            </div>
           </div>
-          <textarea id="web-ide-content" spellcheck="false" placeholder="Select a file from the workspace."></textarea>
+          <div id="web-ide-editor-host">
+            <textarea id="web-ide-content" spellcheck="false" placeholder="Select a file from the workspace."></textarea>
+          </div>
           <div class="web-ide-status" id="web-ide-status">Built-in Web IDE</div>
         </section>
       </div>
@@ -63,8 +71,25 @@
           Follow logs
         </label>
       </div>
+      {% if log_markers %}
+      <div class="log-markers">
+        {% for marker in log_markers %}
+        <a class="button-link tiny secondary" href="#{{ marker.anchor }}">{{ marker.phase }} ({{ marker.line_count }})</a>
+        {% endfor %}
+      </div>
+      {% endif %}
       <pre class="terminal tall" id="live-logs-terminal" data-run-id="{{ run.id }}">{% for log in logs %}[{{ log.phase }}] {{ log.line }}
 {% endfor %}</pre>
+      {% if log_markers %}
+      <div class="phase-jumps">
+        {% for marker in log_markers %}
+        <article id="{{ marker.anchor }}" class="phase-jump">
+          <strong>{{ marker.phase }}</strong>
+          <small>Started {{ marker.started_at }} - {{ marker.line_count }} log line(s)</small>
+        </article>
+        {% endfor %}
+      </div>
+      {% endif %}
     </section>
   </section>
 </section>
