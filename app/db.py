@@ -133,6 +133,28 @@ CREATE TABLE IF NOT EXISTS app_state (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS code_review_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    provider TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    external_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'review',
+    author TEXT NOT NULL DEFAULT '',
+    file_path TEXT NOT NULL DEFAULT '',
+    line INTEGER NOT NULL DEFAULT 0,
+    body TEXT NOT NULL DEFAULT '',
+    html_url TEXT NOT NULL DEFAULT '',
+    response TEXT NOT NULL DEFAULT '',
+    response_url TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    responded_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cr_notes_run_external ON code_review_notes(run_id, external_id, kind);
 """
 
 
@@ -429,6 +451,85 @@ class Database:
 
     def plan_for_queue_item(self, queue_id: int) -> sqlite3.Row | None:
         return self.fetchone("SELECT * FROM ticket_plans WHERE queue_item_id=? ORDER BY id DESC LIMIT 1", (queue_id,))
+
+    def recover_interrupted_work(self) -> int:
+        active_runs = self.fetchall(
+            "SELECT id, ticket_key FROM runs WHERE state IN ('preparing_git','running_claude','reviewing')"
+        )
+        for run in active_runs:
+            self.execute(
+                """
+                UPDATE runs
+                SET state='failed',
+                    error='Recovered after app restart. Previous worker process is no longer attached.',
+                    finished_at=CURRENT_TIMESTAMP,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (int(run["id"]),),
+            )
+            self.add_notification("Run recovered as failed", run["ticket_key"], "warning", int(run["id"]))
+        self.execute(
+            """
+            UPDATE queue_items
+            SET state='failed', updated_at=CURRENT_TIMESTAMP
+            WHERE state IN ('planning','running')
+            """
+        )
+        return len(active_runs)
+
+    def upsert_code_review_note(self, run_id: int, note: dict[str, Any]) -> int:
+        existing = self.fetchone(
+            "SELECT id FROM code_review_notes WHERE run_id=? AND external_id=? AND kind=?",
+            (run_id, note.get("external_id", ""), note.get("kind", "review")),
+        )
+        values = (
+            note.get("provider", ""),
+            note.get("source_url", ""),
+            note.get("external_id", ""),
+            note.get("kind", "review"),
+            note.get("author", ""),
+            note.get("file_path", ""),
+            int(note.get("line") or 0),
+            note.get("body", ""),
+            note.get("html_url", ""),
+        )
+        if existing:
+            self.execute(
+                """
+                UPDATE code_review_notes
+                SET provider=?, source_url=?, external_id=?, kind=?, author=?, file_path=?,
+                    line=?, body=?, html_url=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                values + (existing["id"],),
+            )
+            return int(existing["id"])
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO code_review_notes(
+                    run_id, provider, source_url, external_id, kind, author, file_path, line, body, html_url
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (run_id,) + values,
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def code_review_notes(self, run_id: int) -> list[sqlite3.Row]:
+        return self.fetchall("SELECT * FROM code_review_notes WHERE run_id=? ORDER BY id", (run_id,))
+
+    def mark_code_review_note_responded(self, note_id: int, response: str, response_url: str = "") -> None:
+        self.execute(
+            """
+            UPDATE code_review_notes
+            SET response=?, response_url=?, state='responded', responded_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (response, response_url, note_id),
+        )
 
     def reorder_queue(self, ordered_ids: list[int]) -> None:
         with self.connect() as conn:

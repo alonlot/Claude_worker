@@ -66,7 +66,10 @@
     {% endif %}
     <div class="row detail-actions">
       {% if run.state == "done" and run.commit_sha %}
-      <form method="post" action="/runs/{{ run.id }}/push"><button data-loading-text="Pushing...">Push committed branch</button></form>
+      <a class="button-link" href="/runs/{{ run.id }}/push-preview">Preview push</a>
+      {% endif %}
+      {% if run.state in ["done", "needs_cr_fix", "pushed", "failed"] %}
+      <a class="button-link secondary" href="/runs/{{ run.id }}/code-review">Code review menu</a>
       {% endif %}
       {% if run.state == "needs_cr_fix" %}
       <span class="pill warn">CR fix required before push</span>

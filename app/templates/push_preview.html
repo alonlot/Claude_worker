@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="hero-head">
+    <div>
+      <h2>Push Preview</h2>
+      <p>{{ run.ticket_key }} - {{ run.branch_name }}</p>
+    </div>
+    <a class="button-link secondary" href="/runs/{{ run.id }}">Back to run</a>
+  </div>
+
+  <div class="run-facts">
+    <span><strong>Repo</strong>{{ run.repo_url or "-" }}</span>
+    <span><strong>Base</strong>{{ run.base_branch or "-" }}</span>
+    <span><strong>Branch</strong>{{ run.branch_name or "-" }}</span>
+    <span><strong>Commit</strong>{{ run.commit_sha or "not committed" }}</span>
+    <span><strong>State</strong>{{ run.state }}</span>
+    <span><strong>Pushed</strong>{{ run.pushed_at or "not pushed" }}</span>
+  </div>
+
+  {% if run.state != "done" %}
+  <div class="inline-alert error-alert">Only clean done runs can be pushed. Current state: {{ run.state }}</div>
+  {% elif not run.commit_sha %}
+  <div class="inline-alert error-alert">This run has no commit yet, so it cannot be pushed safely.</div>
+  {% else %}
+  <div class="inline-alert">Review the branch, commit, changed files, and diff summary before pushing.</div>
+  {% endif %}
+
+  {% if run.changed_files %}
+  <details class="review-box" open>
+    <summary>Changed Files</summary>
+    <pre>{{ run.changed_files }}</pre>
+  </details>
+  {% endif %}
+  {% if run.diff_summary %}
+  <details class="review-box" open>
+    <summary>Diff Summary</summary>
+    <pre>{{ run.diff_summary }}</pre>
+  </details>
+  {% endif %}
+
+  <div class="row detail-actions">
+    {% if run.state == "done" and run.commit_sha %}
+    <form method="post" action="/runs/{{ run.id }}/push">
+      <button data-loading-text="Pushing...">Push this branch</button>
+    </form>
+    {% endif %}
+    <a class="button-link secondary" href="/runs/{{ run.id }}/code-review">Code review menu</a>
+  </div>
+</section>
+{% endblock %}

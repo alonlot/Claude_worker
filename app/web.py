@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import Config, load_config_data, load_config_text, save_config_text, write_config_data
+from app.code_review import scan_review_notes
 from app.db import Database
 from app.runner import Worker
 
@@ -29,6 +30,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
     app.state.worker = worker
     app.state.config = config
     app.state.db = db
+    recovered = db.recover_interrupted_work()
+    if recovered:
+        app.state.flash = f"Recovered {recovered} interrupted run(s) as failed after restart."
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
@@ -221,6 +225,54 @@ def create_app(config: Config, db: Database) -> FastAPI:
         except Exception as exc:
             request.app.state.flash = f"Push failed: {exc}"
         return RedirectResponse("/", status_code=303)
+
+    @app.get("/runs/{run_id}/push-preview", response_class=HTMLResponse)
+    async def push_preview(run_id: int, request: Request):
+        detail = run_detail_context(request, db, request.app.state.config, run_id)
+        if detail["run"] is None:
+            return RedirectResponse("/", status_code=303)
+        return templates.TemplateResponse(request, "push_preview.html", detail)
+
+    @app.get("/runs/{run_id}/code-review", response_class=HTMLResponse)
+    async def code_review(run_id: int, request: Request):
+        detail = run_detail_context(request, db, request.app.state.config, run_id)
+        if detail["run"] is None:
+            return RedirectResponse("/", status_code=303)
+        detail["review_notes"] = db.code_review_notes(run_id)
+        detail["auto_cr"] = db.get_state(f"auto_cr:{run_id}", "0") == "1"
+        return templates.TemplateResponse(request, "code_review.html", detail)
+
+    @app.post("/runs/{run_id}/code-review/scan")
+    async def scan_code_review(run_id: int, request: Request, source_url: str = Form(...), auto_cr: str | None = Form(None)):
+        try:
+            db.set_state(f"auto_cr:{run_id}", "1" if auto_cr == "on" else "0")
+            notes = scan_review_notes(source_url.strip())
+            for note in notes:
+                db.upsert_code_review_note(run_id, note)
+            request.app.state.flash = f"Scanned {len(notes)} code review note(s)."
+            if auto_cr == "on" and notes:
+                spawn_tracked_task(
+                    worker.run_external_code_review_fix(run_id),
+                    db,
+                    title="Auto CR failed",
+                    message=f"Auto code-review fix crashed for run #{run_id}.",
+                    run_id=run_id,
+                )
+        except Exception as exc:
+            request.app.state.flash = f"Code review scan failed: {exc}"
+        return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
+
+    @app.post("/runs/{run_id}/code-review/fix")
+    async def fix_code_review(run_id: int, request: Request, user_notes: str = Form(""), comment_back: str | None = Form(None)):
+        spawn_tracked_task(
+            worker.run_external_code_review_fix(run_id, user_notes.strip(), comment_back == "on"),
+            db,
+            title="Code review fix failed",
+            message=f"Code review fix crashed for run #{run_id}.",
+            run_id=run_id,
+        )
+        request.app.state.flash = "Code review fix started."
+        return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 
     @app.get("/runs/{run_id}/summary", response_class=HTMLResponse)
     async def run_summary_partial(run_id: int, request: Request):
@@ -515,6 +567,7 @@ def run_detail_context(request: Request, db: Database, config: Config, run_id: i
         "agent_inputs": db.fetchall("SELECT * FROM agent_inputs WHERE run_id=? ORDER BY id DESC", (run_id,)),
         "sub_agents": db.fetchall("SELECT * FROM sub_agents WHERE run_id=? ORDER BY updated_at DESC", (run_id,)),
         "ide_url": build_ide_url(run_id, run),
+        "review_notes": db.code_review_notes(run_id),
     }
     return data
 

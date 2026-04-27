@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="hero-head">
+    <div>
+      <h2>Code Review</h2>
+      <p>{{ run.ticket_key }} - read notes, fix code, and comment back without resolving anything.</p>
+    </div>
+    <a class="button-link secondary" href="/runs/{{ run.id }}">Back to run</a>
+  </div>
+
+  <form method="post" action="/runs/{{ run.id }}/code-review/scan" class="settings-form">
+    <fieldset>
+      <legend>Scan Review</legend>
+      <label class="wide">Pull request / merge request URL
+        <input name="source_url" placeholder="https://github.com/owner/repo/pull/123">
+      </label>
+      <label class="check">
+        <input type="checkbox" name="auto_cr" {% if auto_cr %}checked{% endif %}>
+        Auto CR after scan
+      </label>
+      <button data-loading-text="Scanning...">Scan review notes</button>
+    </fieldset>
+  </form>
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <h2>Review Notes</h2>
+    <div class="list">
+      {% for note in review_notes %}
+      <article>
+        <div class="ticket-focus-head">
+          <strong>{{ note.author or "reviewer" }}</strong>
+          <span class="pill">{{ note.state }}</span>
+        </div>
+        <small>{{ note.kind }}{% if note.file_path %} - {{ note.file_path }}:{{ note.line }}{% endif %}</small>
+        <span>{{ note.body }}</span>
+        {% if note.html_url %}<small><a class="text-link" href="{{ note.html_url }}" target="_blank" rel="noopener noreferrer">Open note</a></small>{% endif %}
+        {% if note.response %}
+        <details>
+          <summary>Response</summary>
+          <p>{{ note.response }}</p>
+          {% if note.response_url %}<small><a class="text-link" href="{{ note.response_url }}" target="_blank" rel="noopener noreferrer">Open response</a></small>{% endif %}
+        </details>
+        {% endif %}
+      </article>
+      {% else %}
+      <p class="empty">No review notes scanned yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Do CR</h2>
+    <form method="post" action="/runs/{{ run.id }}/code-review/fix" class="stack">
+      <label>User notes for Claude
+        <textarea class="compact message-box" name="user_notes" placeholder="Extra guidance for fixing/responding to reviewer notes."></textarea>
+      </label>
+      <label class="check">
+        <input type="checkbox" name="comment_back" checked>
+        Comment back to review notes
+      </label>
+      <button data-loading-text="Starting CR...">Do CR</button>
+    </form>
+    <div class="inline-alert">
+      The worker reads review notes and may comment back. It does not resolve notes, approve, merge, close, or change review state.
+    </div>
+  </div>
+</section>
+{% endblock %}

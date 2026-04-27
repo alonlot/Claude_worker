@@ -170,6 +170,34 @@ def test_build_accepts_unplanned_ticket(tmp_path):
     assert db.fetchone("SELECT state FROM queue_items WHERE id=?", (queue_id,))["state"] in {"needs_plan", "running", "failed"}
 
 
+def test_push_preview_and_code_review_pages_render(tmp_path):
+    config = Config()
+    config.app.database_path = str(tmp_path / "worker.sqlite3")
+    db = Database(config.app.database_path)
+    db.init()
+    db.upsert_ticket({"key": "A-1", "summary": "One", "status": "To Do", "eligibility": "eligible"})
+    run_id = db.create_run("A-1")
+    db.update_run(
+        run_id,
+        state="done",
+        branch_name="A-1/by_claude_one",
+        repo_url="git@example/repo.git",
+        base_branch="main",
+        commit_sha="abc123",
+        changed_files="app.py",
+        diff_summary="1 file changed",
+    )
+    app = create_app(config, db)
+    client = TestClient(app)
+
+    preview = client.get(f"/runs/{run_id}/push-preview")
+    assert preview.status_code == 200
+    assert "Push Preview" in preview.text
+    cr = client.get(f"/runs/{run_id}/code-review")
+    assert cr.status_code == 200
+    assert "Code Review" in cr.text
+
+
 def test_cancel_mismatch_does_not_cancel_requested_run(tmp_path):
     config = Config()
     config.app.database_path = str(tmp_path / "worker.sqlite3")
@@ -194,9 +222,9 @@ def test_cancel_mismatch_does_not_cancel_requested_run(tmp_path):
 
     response = client.post(f"/runs/{run_one}/cancel", follow_redirects=False)
     assert response.status_code == 303
-    assert response.headers["location"] == f"/runs/{run_two}"
+    assert response.headers["location"] == "/"
     assert db.fetchone("SELECT state FROM runs WHERE id=?", (run_one,))["state"] == "done"
-    assert db.fetchone("SELECT state FROM runs WHERE id=?", (run_two,))["state"] == "running_claude"
+    assert db.fetchone("SELECT state FROM runs WHERE id=?", (run_two,))["state"] == "failed"
 
 
 def test_spawn_tracked_task_creates_error_notification(tmp_path):

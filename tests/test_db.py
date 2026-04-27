@@ -75,3 +75,31 @@ def test_ticket_plan_round_trip(tmp_path):
     plan = db.plan_for_queue_item(queue_id)
     assert plan["id"] == plan_id
     assert plan["mission"] == "Do one"
+
+
+def test_code_review_notes_and_recovery(tmp_path):
+    db = Database(tmp_path / "worker.sqlite3")
+    db.init()
+    db.upsert_ticket({"key": "A-1", "summary": "One", "status": "To Do", "eligibility": "eligible"})
+    run_id = db.create_run("A-1")
+    db.update_run(run_id, state="running_claude")
+    note_id = db.upsert_code_review_note(
+        run_id,
+        {
+            "provider": "github",
+            "source_url": "https://github.com/a/b/pull/1",
+            "external_id": "99",
+            "kind": "review",
+            "author": "reviewer",
+            "file_path": "app.py",
+            "line": 12,
+            "body": "Please fix this.",
+        },
+    )
+    db.mark_code_review_note_responded(note_id, "Fixed, thanks.", "https://github.com/a/b/pull/1#reply")
+    recovered = db.recover_interrupted_work()
+    note = db.fetchone("SELECT * FROM code_review_notes WHERE id=?", (note_id,))
+    run = db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+    assert recovered == 1
+    assert note["state"] == "responded"
+    assert run["state"] == "failed"

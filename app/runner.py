@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from app.claude_runner import (
     review_prompt,
 )
 from app.config import Config, secret_values
+from app.code_review import post_review_reply
 from app.db import Database
 from app.git_ops import GitOps
 from app.jira_client import JiraClient, classify_ticket
@@ -330,6 +332,65 @@ class Worker:
         self.db.add_notification("Branch pushed", run["ticket_key"], "success", run_id)
         return output
 
+    async def run_external_code_review_fix(self, run_id: int, user_notes: str = "", comment_back: bool = True) -> None:
+        run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+        ticket = self.db.fetchone("SELECT * FROM tickets WHERE key=?", (run["ticket_key"],)) if run else None
+        if not run or not ticket:
+            raise RuntimeError("Run or ticket not found")
+        notes = self.db.code_review_notes(run_id)
+        open_notes = [note for note in notes if note["state"] != "responded"]
+        if not open_notes:
+            raise RuntimeError("No open code review notes to process")
+        repo_path = Path(run["workspace_path"])
+        if not repo_path.exists():
+            raise RuntimeError("Run workspace does not exist")
+        self.claude = ClaudeRunner(self.config, lambda phase, line: self._log(run_id, phase, line))
+        self.db.update_run(run_id, state="running_claude", progress=90)
+        notes_text = "\n\n".join(
+            f"NOTE_ID: {note['id']}\nEXTERNAL_ID: {note['external_id']}\nKIND: {note['kind']}\n"
+            f"AUTHOR: {note['author']}\nFILE: {note['file_path']}:{note['line']}\nBODY:\n{note['body']}"
+            for note in open_notes
+        )
+        prompt = f"""
+You are fixing code review notes for Jira ticket {ticket['key']}.
+Do not run git commands. Python owns all Git interactions.
+
+For each review note:
+- Fix code when the note is actionable and correct.
+- If the note is a question, incorrect, ambiguous, or needs more information, do not invent certainty.
+- Produce a response for every note.
+- Do not resolve review threads or change review state.
+
+Additional user instructions:
+{user_notes}
+
+Review notes:
+{notes_text}
+
+After editing files, return JSON with one key "responses".
+responses must be an array of objects:
+{{"note_id": 123, "response": "short reply to post back to the reviewer"}}
+"""
+        output = await self.claude.run_prompt("cr-notes", prompt, cwd=repo_path)
+        responses = self._parse_review_responses(output)
+        changed = self.git.status(repo_path)
+        if changed:
+            self.db.update_run(run_id, changed_files=self.git.changed_files(repo_path), diff_summary=self.git.diff_stat(repo_path))
+            commit_message = f"{run['ticket_key']}: Address code review notes"
+            self._log(run_id, "git", f"Committing code review fixes: {commit_message}")
+            self.git.commit_all(repo_path, commit_message)
+            commit_sha = self.git.head_sha(repo_path)
+            self._log(run_id, "git", f"Commit created: {commit_sha}")
+            self.db.update_run(run_id, commit_sha=commit_sha, commit_message=commit_message, state="done", progress=100)
+        for note in open_notes:
+            response = responses.get(int(note["id"])) or "Thanks. I reviewed this note and updated the branch or left the requested context in the latest run report."
+            response_url = ""
+            if comment_back:
+                response_url = post_review_reply(note["source_url"], note["external_id"], note["kind"], response)
+                self._log(run_id, "cr", f"Commented on review note #{note['id']}")
+            self.db.mark_code_review_note_responded(int(note["id"]), response, response_url)
+        self.db.add_notification("Code review handled", run["ticket_key"], "success", run_id)
+
     def rerun_ticket(self, ticket_key: str) -> None:
         self.db.enqueue(ticket_key)
 
@@ -413,6 +474,26 @@ class Worker:
                 review,
             ]
         )
+
+    @staticmethod
+    def _parse_review_responses(output: str) -> dict[int, str]:
+        match = re.search(r"\{.*\}", output, re.DOTALL)
+        if not match:
+            return {}
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return {}
+        responses: dict[int, str] = {}
+        for item in data.get("responses", []) or []:
+            try:
+                note_id = int(item.get("note_id"))
+            except (TypeError, ValueError):
+                continue
+            response = str(item.get("response") or "").strip()
+            if response:
+                responses[note_id] = response
+        return responses
 
     @staticmethod
     def _progress_from_line(line: str) -> int | None:
