@@ -150,6 +150,7 @@ def _scan_github(source: ReviewSource, source_url: str) -> list[dict[str, Any]]:
                 "file_path": item.get("path") or "",
                 "line": item.get("line") or item.get("original_line") or 0,
                 "body": body,
+                "diff_hunk": str(item.get("diff_hunk") or ""),
                 "html_url": item.get("html_url") or "",
             }
         )

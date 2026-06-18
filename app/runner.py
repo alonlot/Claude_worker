@@ -397,19 +397,17 @@ class Worker:
             raise RuntimeError("Run workspace does not exist")
         self.claude = self._runner(run_id, lambda phase, line: self._log(run_id, phase, line))
         self.db.update_run(run_id, state="running_claude", progress=90)
-        notes_text = "\n\n".join(
-            f"NOTE_ID: {note['id']}\nEXTERNAL_ID: {note['external_id']}\nKIND: {note['kind']}\n"
-            f"AUTHOR: {note['author']}\nFILE: {note['file_path']}:{note['line']}\nBODY:\n{note['body']}"
-            for note in open_notes
-        )
+        notes_text = "\n\n".join(self._format_review_note(note) for note in open_notes)
+        branch_diff = self._branch_diff_context(repo_path, run["base_branch"])
         prompt = f"""
 You are fixing code review notes for Jira ticket {ticket['key']}.
 Do not run git commands. Python owns all Git interactions.
 
 For each review note:
+- Read the "CODE FROM GIT" hunk attached to the note (the exact lines the reviewer commented on) and open the referenced file to see the surrounding code before editing.
 - Fix code when the note is actionable and correct.
-- If the note is a question, incorrect, ambiguous, or needs more information, do not invent certainty.
-- Produce a response for every note.
+- If the note is a question, incorrect, ambiguous, or needs more information, do not invent certainty — answer it honestly on the user's behalf.
+- Produce a response for EVERY note. This response is posted back to the reviewer as the user's answer, so write it in first person and explain what you changed or why no change was made.
 - Do not resolve review threads or change review state.
 
 Additional user instructions:
@@ -418,12 +416,16 @@ Additional user instructions:
 CI status context (if available):
 {ci_context}
 
+Current branch diff (the work under review, straight from git):
+{branch_diff}
+
 Review notes:
 {notes_text}
 
 After editing files, return JSON with one key "responses".
 responses must be an array of objects:
-{{"note_id": 123, "response": "short reply to post back to the reviewer"}}
+{{"note_id": 123, "response": "first-person reply to post back to the reviewer"}}
+Include one object for every NOTE_ID above.
 """
         output = await self.claude.run_prompt("cr-notes", prompt, cwd=repo_path)
         responses = self._parse_review_responses(output)
@@ -655,6 +657,34 @@ Tasks:
                 review,
             ]
         )
+
+    @staticmethod
+    def _format_review_note(note: Any) -> str:
+        lines = [
+            f"NOTE_ID: {note['id']}",
+            f"EXTERNAL_ID: {note['external_id']}",
+            f"KIND: {note['kind']}",
+            f"AUTHOR: {note['author']}",
+            f"FILE: {note['file_path']}:{note['line']}",
+        ]
+        hunk = note["diff_hunk"] if "diff_hunk" in note.keys() else ""
+        if hunk:
+            lines.append("CODE FROM GIT:\n" + str(hunk))
+        lines.append(f"BODY:\n{note['body']}")
+        return "\n".join(lines)
+
+    def _branch_diff_context(self, repo_path: Path, base_branch: str, limit: int = 12000) -> str:
+        """The branch's own diff, read straight from git, to ground the fixes."""
+        try:
+            diff = self.git.review_diff(repo_path, base_branch)
+        except Exception:
+            return "(diff unavailable)"
+        diff = diff.strip()
+        if not diff:
+            return "(no diff detected)"
+        if len(diff) > limit:
+            return diff[:limit] + "\n... (diff truncated)"
+        return diff
 
     @staticmethod
     def _parse_review_responses(output: str) -> dict[int, str]:

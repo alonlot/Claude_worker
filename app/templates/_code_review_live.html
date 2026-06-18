@@ -25,6 +25,12 @@
           </div>
           <small>{{ note.kind }}{% if note.file_path %} - {{ note.file_path }}:{{ note.line }}{% endif %}</small>
           <span>{{ note.body }}</span>
+          {% if note.diff_hunk %}
+          <details>
+            <summary>Code from git</summary>
+            <pre class="cr-hunk">{{ note.diff_hunk }}</pre>
+          </details>
+          {% endif %}
           {% if note.html_url %}<small><a class="text-link" href="{{ note.html_url }}" target="_blank" rel="noopener noreferrer">Open note</a></small>{% endif %}
           {% if note.response %}
           <details>
