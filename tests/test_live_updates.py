@@ -57,3 +57,23 @@ def test_run_interaction_partial_polls_while_active(tmp_path):
     db.update_run(run_id, state="done")
     finished = client.get(f"/runs/{run_id}/interaction")
     assert "every 3s" not in finished.text
+
+
+def test_code_review_live_partial_reflects_state(tmp_path):
+    config, db, client = _client(tmp_path)
+    db.upsert_ticket({"key": "A-1", "summary": "One", "status": "To Do", "eligibility": "eligible"})
+    run_id = db.create_run("A-1")
+    db.update_run(run_id, state="running_claude", progress=88)
+    db.upsert_code_review_note(
+        run_id,
+        {"external_id": "1", "kind": "review", "author": "rev", "body": "please fix UNIQUEBODY"},
+    )
+    live = client.get(f"/runs/{run_id}/code-review/live")
+    assert live.status_code == 200
+    assert 'id="cr-live"' in live.text
+    assert "every 2s" in live.text  # active run polls fast
+    assert "UNIQUEBODY" in live.text
+
+    db.update_run(run_id, state="done")
+    idle = client.get(f"/runs/{run_id}/code-review/live")
+    assert "every 6s" in idle.text  # idle run polls slowly

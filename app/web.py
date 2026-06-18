@@ -480,6 +480,21 @@ def create_app(config: Config, db: Database) -> FastAPI:
         )
         return templates.TemplateResponse(request, "code_review.html", detail)
 
+    @app.get("/runs/{run_id}/code-review/live", response_class=HTMLResponse)
+    async def code_review_live(run_id: int, request: Request):
+        owner = owner_of(request)
+        run = owned_run(run_id, owner)
+        if not run:
+            return HTMLResponse("", status_code=404)
+        ci_jobs = parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", "", owner=owner))
+        if not ci_jobs and run["ticket_key"] == "DEMO-101":
+            ci_jobs = demo_ci_jobs_for_display()
+        return templates.TemplateResponse(
+            request,
+            "_code_review_live.html",
+            {"request": request, "run": run, "review_notes": db.code_review_notes(run_id), "ci_jobs": ci_jobs},
+        )
+
     @app.post("/runs/{run_id}/code-review/scan")
     async def scan_code_review(
         run_id: int,
