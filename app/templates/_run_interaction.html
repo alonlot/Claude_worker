@@ -1,4 +1,10 @@
-<section class="studio-side" id="run-interaction">
+<section class="studio-side" id="run-interaction"
+  {% if run and run.state in ["preparing_git", "running_claude", "reviewing"] %}
+  hx-get="/runs/{{ run.id }}/interaction"
+  hx-trigger="every 3s"
+  hx-swap="outerHTML"
+  {% endif %}
+>
   <section class="studio-message">
     {% set ns = namespace(has_pending_question=false) %}
     {% for question in questions %}
@@ -68,7 +74,7 @@
       hx-swap="outerHTML"
     >
       <label>Send guidance to the active agent
-        <textarea class="compact message-box" name="message" placeholder="Add guidance, answer context, or correction for the active agent."></textarea>
+        <textarea class="compact message-box" id="run-message-box" hx-preserve="true" name="message" placeholder="Add guidance, answer context, or correction for the active agent."></textarea>
       </label>
       <button data-loading-text="Sending...">Send to agent</button>
     </form>

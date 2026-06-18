@@ -290,6 +290,17 @@ def create_app(config: Config, db: Database) -> FastAPI:
             },
         )
 
+    @app.get("/queue/{queue_id}/plan-body", response_class=HTMLResponse)
+    async def queue_plan_body(queue_id: int, request: Request):
+        item = db.queue_item(queue_id)
+        if not item or item["owner"] != owner_of(request):
+            return HTMLResponse("", status_code=404)
+        return templates.TemplateResponse(
+            request,
+            "_plan_body.html",
+            {"request": request, "item": item, "plan": db.plan_for_queue_item(queue_id)},
+        )
+
     @app.post("/queue/{queue_id}/build")
     async def build_queue(queue_id: int, request: Request):
         item = db.queue_item(queue_id)
@@ -620,6 +631,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
         if is_htmx(request):
             return templates.TemplateResponse(request, "_run_interaction.html", run_interaction_context(db, run_id))
         return RedirectResponse(f"/runs/{run_id}", status_code=303)
+
+    @app.get("/runs/{run_id}/interaction", response_class=HTMLResponse)
+    async def run_interaction(run_id: int, request: Request):
+        if not owned_run(run_id, owner_of(request)):
+            return HTMLResponse("", status_code=404)
+        return templates.TemplateResponse(request, "_run_interaction.html", run_interaction_context(db, run_id))
 
     @app.get("/runs/{run_id}/logs", response_class=PlainTextResponse)
     async def run_logs(run_id: int, request: Request):

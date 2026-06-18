@@ -1,0 +1,30 @@
+<div id="plan-live"
+     hx-get="/queue/{{ item.id }}/plan-body"
+     hx-trigger="{% if item.state == 'planning' %}every 2s{% endif %}"
+     hx-swap="outerHTML">
+  <div class="panel">
+    <h2>Mission Plan {% if item.state == 'planning' %}<span class="pill warn">planning…</span>{% endif %}</h2>
+    {% if plan %}
+    <div class="run-facts">
+      <span><strong>Repo</strong>{{ plan.repo_url or "-" }}</span>
+      <span><strong>Base</strong>{{ plan.base_branch or "-" }}</span>
+      <span><strong>Branch</strong>{{ plan.branch_name or "-" }}</span>
+      <span><strong>Updated</strong>{{ plan.updated_at }}</span>
+    </div>
+    <article class="ticket-focus">
+      <h3>{{ plan.mission }}</h3>
+      <p>{{ plan.plan_text }}</p>
+    </article>
+    {% if plan.user_notes %}
+    <details class="review-box">
+      <summary>Latest User Notes</summary>
+      <pre>{{ plan.user_notes }}</pre>
+    </details>
+    {% endif %}
+    {% elif item.state == 'planning' %}
+    <p class="empty">Claude is preparing the mission plan… this view updates automatically.</p>
+    {% else %}
+    <p class="empty">No mission plan yet. You can ask Claude for one, or build immediately.</p>
+    {% endif %}
+  </div>
+</div>
