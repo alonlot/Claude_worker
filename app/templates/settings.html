@@ -41,6 +41,16 @@
     </fieldset>
 
     <fieldset>
+      <legend>Local delivery (scp)</legend>
+      <p class="field-hint">"Take a look locally" copies a finished run's workspace to your machine over SSH.</p>
+      <label>Host <input name="scp_host" value="{{ config.delivery.scp_host }}" placeholder="your-laptop.local or 10.0.0.5"></label>
+      <label>User <input name="scp_user" value="{{ config.delivery.scp_user }}" placeholder="you"></label>
+      <label>Destination path <input name="scp_path" value="{{ config.delivery.scp_path }}" placeholder="/home/you/claude-runs/"></label>
+      <label>SSH key path (on server) <input name="ssh_key" value="{{ config.delivery.ssh_key }}" placeholder="/home/worker/.ssh/id_ed25519"></label>
+      <label>SSH port <input name="ssh_port" type="number" min="1" max="65535" value="{{ config.delivery.ssh_port }}"></label>
+    </fieldset>
+
+    <fieldset>
       <legend>UI</legend>
       <label>Title <input name="ui_title" value="{{ config.ui.title }}"></label>
     </fieldset>

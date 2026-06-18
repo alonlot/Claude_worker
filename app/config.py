@@ -17,7 +17,7 @@ DEFAULT_OWNER = "local"
 
 # Config sections that are stored per user (editable on the per-user Settings page).
 # Everything else (app, auth, docker) is server-level and only an admin edits it.
-USER_SECTIONS = ("jira", "git", "claude", "ui")
+USER_SECTIONS = ("jira", "git", "claude", "ui", "delivery")
 
 
 class IndentedSafeDumper(yaml.SafeDumper):
@@ -72,6 +72,17 @@ class ClaudeConfig:
 
 
 @dataclass
+class DeliveryConfig:
+    # "Take a look locally": the Linux server scp's a finished run's workspace to
+    # the user's own machine over SSH. These describe that destination.
+    scp_host: str = ""
+    scp_user: str = ""
+    scp_path: str = ""
+    ssh_key: str = ""  # path on the server to the private key
+    ssh_port: int = 22
+
+
+@dataclass
 class UiConfig:
     title: str = "Jira Claude Worker"
 
@@ -120,6 +131,7 @@ class Config:
     git: GitConfig = field(default_factory=GitConfig)
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
     ui: UiConfig = field(default_factory=UiConfig)
+    delivery: DeliveryConfig = field(default_factory=DeliveryConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
     docker: DockerConfig = field(default_factory=DockerConfig)
 
@@ -166,6 +178,7 @@ def _config_from_data(raw: dict[str, Any]) -> Config:
         git=_config_section(GitConfig, raw, "git"),
         claude=_config_section(ClaudeConfig, raw, "claude"),
         ui=_config_section(UiConfig, raw, "ui"),
+        delivery=_config_section(DeliveryConfig, raw, "delivery"),
         auth=_config_section(AuthConfig, raw, "auth"),
         docker=_config_section(DockerConfig, raw, "docker"),
     )
@@ -194,6 +207,7 @@ def apply_user_sections(base: Config, sections: dict[str, Any] | None) -> Config
         "git": _section_to_dict(base.git),
         "claude": _section_to_dict(base.claude),
         "ui": _section_to_dict(base.ui),
+        "delivery": _section_to_dict(base.delivery),
     }
     for name in USER_SECTIONS:
         incoming = (sections or {}).get(name)

@@ -95,6 +95,9 @@
       {% if run.review_output %}
       <form method="post" action="/runs/{{ run.id }}/review-fix"><button class="secondary" data-loading-text="Starting CR fix...">Do CR Fix</button></form>
       {% endif %}
+      {% if run.workspace_path and run.state in ["done", "needs_cr_fix", "pushed", "failed", "cancelled"] %}
+      <form method="post" action="/runs/{{ run.id }}/deliver"><button class="secondary" data-loading-text="Copying...">Take a look locally</button></form>
+      {% endif %}
       <form method="post" action="/tickets/{{ run.ticket_key }}/rerun"><button class="secondary">Rerun ticket</button></form>
     </div>
   </div>

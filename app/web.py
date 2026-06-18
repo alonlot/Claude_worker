@@ -404,6 +404,17 @@ def create_app(config: Config, db: Database) -> FastAPI:
         request.app.state.flash = "CR fix started."
         return RedirectResponse("/", status_code=303)
 
+    @app.post("/runs/{run_id}/deliver")
+    async def deliver_run(run_id: int, request: Request):
+        if not owned_run(run_id, owner_of(request)):
+            return RedirectResponse("/", status_code=303)
+        try:
+            result = worker_for(request).deliver_locally(run_id)
+            request.app.state.flash = f"Workspace copied locally. {result}"
+        except Exception as exc:
+            request.app.state.flash = f"Local delivery failed: {exc}"
+        return RedirectResponse(f"/runs/{run_id}", status_code=303)
+
     @app.post("/runs/{run_id}/push")
     async def push_run(run_id: int, request: Request):
         if not owned_run(run_id, owner_of(request)):
@@ -782,6 +793,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
         allow_cr_fix: str | None = Form(None),
         auto_cr_fix: str | None = Form(None),
         ui_title: str = Form("Jira Claude Worker"),
+        scp_host: str = Form(""),
+        scp_user: str = Form(""),
+        scp_path: str = Form(""),
+        ssh_key: str = Form(""),
+        ssh_port: int = Form(22),
     ):
         owner = owner_of(request)
         try:
@@ -814,6 +830,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     "auto_cr_fix": auto_cr_fix == "on",
                 },
                 "ui": {"title": ui_title},
+                "delivery": {
+                    "scp_host": scp_host,
+                    "scp_user": scp_user,
+                    "scp_path": scp_path,
+                    "ssh_key": ssh_key,
+                    "ssh_port": ssh_port,
+                },
             }
             db.set_user_config(owner, sections)
             registry.refresh(owner)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -482,6 +483,40 @@ Tasks:
 
     def rerun_ticket(self, ticket_key: str) -> None:
         self.db.enqueue(ticket_key, owner=self.owner)
+
+    def _scp_command(self, source: str) -> list[str]:
+        d = self.config.delivery
+        if not d.scp_host or not d.scp_path:
+            raise RuntimeError("Configure delivery scp host and path in Settings first.")
+        dest_user = f"{d.scp_user}@" if d.scp_user else ""
+        destination = f"{dest_user}{d.scp_host}:{d.scp_path}"
+        cmd = ["scp", "-r", "-o", "StrictHostKeyChecking=accept-new"]
+        if d.ssh_port and int(d.ssh_port) != 22:
+            cmd += ["-P", str(int(d.ssh_port))]
+        if d.ssh_key:
+            cmd += ["-i", d.ssh_key]
+        cmd += [source, destination]
+        return cmd
+
+    def deliver_locally(self, run_id: int) -> str:
+        """scp the finished run's workspace to the user's machine over SSH."""
+        run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+        if not run or not run["workspace_path"]:
+            raise RuntimeError("Run has no workspace to deliver yet.")
+        repo_path = Path(run["workspace_path"])
+        if not repo_path.exists():
+            raise RuntimeError("Run workspace folder no longer exists.")
+        cmd = self._scp_command(str(repo_path))
+        d = self.config.delivery
+        self._log(run_id, "deliver", f"scp -r workspace -> {d.scp_host}:{d.scp_path}")
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        output = mask_secrets((proc.stdout or "") + (proc.stderr or ""), secret_values(self.config)).strip()
+        if proc.returncode != 0:
+            raise RuntimeError(output or "scp failed")
+        self.db.add_notification(
+            "Workspace delivered", f"{run['ticket_key']} copied to {d.scp_host}", "success", run_id, owner=self.owner
+        )
+        return output or f"Delivered to {d.scp_host}:{d.scp_path}"
 
     def _log(self, run_id: int, phase: str, line: str) -> None:
         clean = mask_secrets(line, secret_values(self.config))
