@@ -26,6 +26,10 @@
   <div class="inline-alert">Review the branch, commit, changed files, and diff summary before pushing.</div>
   {% endif %}
 
+  {% if merge_request_url %}
+  <div class="inline-alert">Merge request: <a href="{{ merge_request_url }}" target="_blank" rel="noopener noreferrer">{{ merge_request_url }}</a></div>
+  {% endif %}
+
   {% if run.changed_files %}
   <details class="review-box" open>
     <summary>Changed Files</summary>
@@ -33,16 +37,29 @@
   </details>
   {% endif %}
   {% if run.diff_summary %}
-  <details class="review-box" open>
+  <details class="review-box">
     <summary>Diff Summary</summary>
     <pre>{{ run.diff_summary }}</pre>
   </details>
   {% endif %}
 
+  {% if diff_lines %}
+  <details class="review-box" open>
+    <summary>Full Diff ({{ diff_lines | length }} lines)</summary>
+    <pre class="diff">{% for line in diff_lines %}<span class="{{ line.cls }}">{{ line.text }}</span>
+{% endfor %}</pre>
+  </details>
+  {% else %}
+  <p class="empty">No diff available for this run yet.</p>
+  {% endif %}
+
   <div class="row detail-actions">
-    {% if run.state == "done" and run.commit_sha %}
+    {% if run.state in ["done", "pushed"] and run.commit_sha %}
     <form method="post" action="/runs/{{ run.id }}/push">
-      <button data-loading-text="Pushing...">Push this branch</button>
+      <button data-loading-text="Pushing...">{% if run.state == "pushed" %}Push again{% else %}Push this branch{% endif %}</button>
+    </form>
+    <form method="post" action="/runs/{{ run.id }}/merge-request">
+      <button class="secondary" data-loading-text="Opening...">Create merge request</button>
     </form>
     {% endif %}
     <a class="button-link secondary" href="/runs/{{ run.id }}/code-review">Code review menu</a>

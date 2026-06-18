@@ -1143,3 +1143,12 @@ textarea:not(.compact) {
 .login-panel { padding: 28px; }
 .login-panel .settings-form label { display: block; margin-bottom: 14px; }
 .login-panel input { width: 100%; }
+
+/* Push Review: colorized unified diff (air-gapped, server-rendered) */
+pre.diff { line-height: 1.45; overflow-x: auto; }
+pre.diff span { display: block; white-space: pre; }
+pre.diff .diff-add { color: #56d364; background: rgba(46, 160, 67, 0.12); }
+pre.diff .diff-del { color: #f85149; background: rgba(248, 81, 73, 0.12); }
+pre.diff .diff-hunk { color: #79c0ff; }
+pre.diff .diff-meta { color: #8b949e; }
+pre.diff .diff-ctx { color: inherit; }

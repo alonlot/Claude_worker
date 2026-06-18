@@ -417,10 +417,31 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     @app.get("/runs/{run_id}/push-preview", response_class=HTMLResponse)
     async def push_preview(run_id: int, request: Request):
-        detail = run_detail_context(request, db, request.app.state.config, run_id, owner_of(request))
+        owner = owner_of(request)
+        detail = run_detail_context(request, db, request.app.state.config, run_id, owner)
         if detail["run"] is None:
             return RedirectResponse("/", status_code=303)
+        run = detail["run"]
+        diff_text = ""
+        if run["workspace_path"]:
+            try:
+                diff_text = worker_for(request).git.review_diff(run["workspace_path"], run["base_branch"])
+            except Exception:
+                diff_text = ""
+        detail["diff_lines"] = diff_lines(diff_text)
+        detail["merge_request_url"] = db.get_state(f"merge_request_url:{run_id}", "", owner=owner)
         return templates.TemplateResponse(request, "push_preview.html", detail)
+
+    @app.post("/runs/{run_id}/merge-request")
+    async def create_run_merge_request(run_id: int, request: Request):
+        if not owned_run(run_id, owner_of(request)):
+            return RedirectResponse("/", status_code=303)
+        try:
+            url = worker_for(request).open_merge_request(run_id)
+            request.app.state.flash = f"Merge request opened: {url}" if url else "No merge request was created."
+        except Exception as exc:
+            request.app.state.flash = f"Merge request failed: {exc}"
+        return RedirectResponse(f"/runs/{run_id}/push-preview", status_code=303)
 
     @app.get("/runs/{run_id}/code-review", response_class=HTMLResponse)
     async def code_review(run_id: int, request: Request):
@@ -751,6 +772,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
         git_remote_name: str = Form("origin"),
         git_default_repo_url: str = Form(""),
         git_default_base_branch: str = Form("main"),
+        auto_push: str | None = Form(None),
+        auto_merge_request: str | None = Form(None),
         claude_command: str = Form("claude"),
         claude_args: str = Form(""),
         claude_model: str = Form(""),
@@ -778,6 +801,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     "remote_name": git_remote_name,
                     "default_repo_url": git_default_repo_url,
                     "default_base_branch": git_default_base_branch,
+                    "auto_push": auto_push == "on",
+                    "auto_merge_request": auto_merge_request == "on",
                 },
                 "claude": {
                     "command": claude_command,
@@ -1024,6 +1049,24 @@ def pop_flash(request: Request) -> str:
 
 def split_lines(value: str) -> list[str]:
     return [line.strip() for line in value.replace(",", "\n").splitlines() if line.strip()]
+
+
+def diff_lines(text: str) -> list[dict[str, str]]:
+    """Classify unified-diff lines for colorized, air-gapped rendering."""
+    rows: list[dict[str, str]] = []
+    for line in text.splitlines():
+        if line.startswith(("+++", "---", "diff ", "index ")):
+            cls = "diff-meta"
+        elif line.startswith("@@"):
+            cls = "diff-hunk"
+        elif line.startswith("+"):
+            cls = "diff-add"
+        elif line.startswith("-"):
+            cls = "diff-del"
+        else:
+            cls = "diff-ctx"
+        rows.append({"cls": cls, "text": line})
+    return rows
 
 
 def build_ide_url(run_id: int, run) -> str:

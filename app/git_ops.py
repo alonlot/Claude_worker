@@ -75,6 +75,23 @@ class GitOps:
     def head_sha(self, repo_path: str | Path) -> str:
         return self.run(["git", "rev-parse", "HEAD"], cwd=repo_path)
 
+    def review_diff(self, repo_path: str | Path, base_branch: str) -> str:
+        """Full unified diff of this branch's work, for the Push Review page."""
+        remote = self.config.git.remote_name
+        base = base_branch or self.default_branch(repo_path)
+        candidates = [[f"{remote}/{base}...HEAD"], ["HEAD~1...HEAD"]]
+        for args in candidates:
+            try:
+                out = self.run(["git", "diff", "--no-color", *args], cwd=repo_path)
+            except GitError:
+                continue
+            if out.strip():
+                return out
+        try:
+            return self.run(["git", "diff", "--no-color"], cwd=repo_path)
+        except GitError:
+            return ""
+
     def has_commits_ahead(self, repo_path: str | Path, base_branch: str) -> bool:
         base = base_branch or self.default_branch(repo_path)
         count = self.run(

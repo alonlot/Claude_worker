@@ -19,7 +19,7 @@ from app.claude_runner import (
     review_prompt,
 )
 from app.config import Config, DEFAULT_OWNER, apply_user_sections, secret_values
-from app.code_review import post_review_reply
+from app.code_review import create_merge_request, post_review_reply
 from app.db import Database
 from app.git_ops import GitOps
 from app.jira_client import JiraClient, classify_ticket
@@ -287,6 +287,30 @@ class Worker:
                 self.db.add_notification("Run needs CR fix", ticket["ticket_key"], "warning", run_id, owner=self.owner)
             else:
                 self.db.add_notification("Run finished", ticket["ticket_key"], "success", run_id, owner=self.owner)
+                if self.config.git.auto_push:
+                    self._auto_publish(run_id, ticket, discovery, branch)
+
+    def _auto_publish(self, run_id: int, ticket: dict[str, Any], discovery: dict[str, str], branch: str) -> None:
+        """Push (and optionally open a merge request) for a clean done run."""
+        try:
+            self.push_run(run_id)
+            if self.config.git.auto_merge_request:
+                self.open_merge_request(run_id)
+        except Exception as exc:
+            self._log(run_id, "git", f"Auto-publish failed: {exc}")
+            self.db.add_notification("Auto-push failed", f"{ticket['ticket_key']}: {exc}", "error", run_id, owner=self.owner)
+
+    def open_merge_request(self, run_id: int) -> str:
+        run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+        if not run:
+            raise RuntimeError("Run not found")
+        title = f"{run['ticket_key']}: {run['commit_message'] or 'Automated change'}"
+        url = create_merge_request(run["repo_url"], run["branch_name"], run["base_branch"], title, run["run_report"])
+        if url:
+            self._log(run_id, "git", f"Opened merge request: {url}")
+            self.db.set_state(f"merge_request_url:{run_id}", url, owner=self.owner)
+            self.db.add_notification("Merge request opened", url, "success", run_id, owner=self.owner)
+        return url
 
     async def run_cr_fix(self, run_id: int) -> None:
         run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))

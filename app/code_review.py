@@ -48,6 +48,44 @@ def suggest_review_url(repo_url: str, branch_name: str) -> str:
     return ""
 
 
+def create_merge_request(repo_url: str, branch: str, base: str, title: str, body: str = "") -> str:
+    """Open a GitHub pull request or GitLab merge request. Returns its URL."""
+    slug = _repo_slug(repo_url)
+    if not slug or not branch:
+        raise CodeReviewError("Cannot create a merge request without repo and branch")
+    if "github.com" in repo_url:
+        out = _gh(
+            [
+                "pr",
+                "create",
+                "--repo",
+                slug,
+                "--head",
+                branch,
+                "--base",
+                base or "main",
+                "--title",
+                title,
+                "--body",
+                body or title,
+            ]
+        )
+        return out.strip().splitlines()[-1] if out.strip() else ""
+    if "gitlab.com" in repo_url:
+        data = _gitlab_json(
+            f"/projects/{quote(slug, safe='')}/merge_requests",
+            method="POST",
+            form={
+                "source_branch": branch,
+                "target_branch": base or "main",
+                "title": title,
+                "description": body or title,
+            },
+        )
+        return str(data.get("web_url") or "")
+    raise CodeReviewError("Only GitHub and GitLab remotes support merge request creation")
+
+
 def parse_review_url(url: str) -> ReviewSource:
     github = re.search(r"github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)", url)
     if github:

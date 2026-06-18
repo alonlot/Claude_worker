@@ -53,6 +53,11 @@ class GitConfig:
     remote_name: str = "origin"
     default_repo_url: str = ""
     default_base_branch: str = "main"
+    # When true, a clean "done" run is pushed automatically. When false the user
+    # reviews the diff on the Push Review page and pushes manually.
+    auto_push: bool = False
+    # When true (and auto_push), a GitHub PR / GitLab MR is opened after the push.
+    auto_merge_request: bool = False
 
 
 @dataclass
