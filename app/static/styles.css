@@ -1152,3 +1152,16 @@ pre.diff .diff-del { color: #f85149; background: rgba(248, 81, 73, 0.12); }
 pre.diff .diff-hunk { color: #79c0ff; }
 pre.diff .diff-meta { color: #8b949e; }
 pre.diff .diff-ctx { color: inherit; }
+
+/* Air-gapped Web IDE: edit / highlight / diff views */
+#web-ide-editor-host { position: relative; display: flex; min-height: 340px; }
+#web-ide-editor-host > * { flex: 1; width: 100%; margin: 0; box-sizing: border-box; }
+#web-ide-content { resize: vertical; min-height: 340px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.web-ide-view { overflow: auto; min-height: 340px; max-height: 62vh; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.web-ide-view code { background: transparent; padding: 0; }
+.ide-modes { display: inline-flex; gap: 4px; }
+.hidden { display: none !important; }
+.web-ide-diff span { display: block; white-space: pre; }
+.web-ide-diff .diff-add { color: #56d364; background: rgba(46, 160, 67, 0.12); }
+.web-ide-diff .diff-del { color: #f85149; background: rgba(248, 81, 73, 0.12); }
+.web-ide-diff .diff-ctx { color: inherit; }

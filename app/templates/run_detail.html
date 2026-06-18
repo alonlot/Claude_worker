@@ -45,15 +45,19 @@
           <div class="web-ide-toolbar">
             <span id="web-ide-current-file">No file selected</span>
             <div class="row">
-              <label class="check tiny-check">
-                <input type="checkbox" id="web-ide-diff-toggle">
-                Diff vs HEAD
-              </label>
+              <div class="ide-modes">
+                <button class="tiny" type="button" data-mode="edit">Edit</button>
+                <button class="tiny secondary" type="button" data-mode="preview">Highlight</button>
+                <button class="tiny secondary" type="button" data-mode="diff">Diff vs HEAD</button>
+              </div>
+              <label class="check tiny-check"><input type="checkbox" id="web-ide-follow" checked> Follow changes</label>
               <button class="tiny secondary" id="web-ide-save" type="button" disabled>Save</button>
             </div>
           </div>
           <div id="web-ide-editor-host">
             <textarea id="web-ide-content" spellcheck="false" placeholder="Select a file from the workspace."></textarea>
+            <pre id="web-ide-preview" class="web-ide-view hidden"><code></code></pre>
+            <pre id="web-ide-diff" class="web-ide-view web-ide-diff hidden"></pre>
           </div>
           <div class="web-ide-status" id="web-ide-status">Built-in Web IDE</div>
         </section>

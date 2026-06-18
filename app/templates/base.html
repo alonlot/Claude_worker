@@ -5,7 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title }}</title>
   <link rel="stylesheet" href="/static/styles.css">
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <link rel="stylesheet" href="/static/vendor/highlight-theme.css">
+  <!-- Vendored locally so the app works on an air-gapped network (no CDN). -->
+  <script src="/static/vendor/htmx.min.js"></script>
+  <script src="/static/vendor/highlight.min.js"></script>
 </head>
 <body>
   <header class="topbar">

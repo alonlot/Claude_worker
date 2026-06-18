@@ -180,6 +180,39 @@ function initLiveLogsPolling(root = document) {
   window.addEventListener("beforeunload", () => window.clearInterval(intervalId), { once: true });
 }
 
+function lineDiff(aText, bText) {
+  const a = aText.split("\n");
+  const b = bText.split("\n");
+  const n = a.length;
+  const m = b.length;
+  // LCS length table (files are size-capped server-side, so this is fine).
+  const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { out.push({ c: "ctx", t: a[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ c: "del", t: a[i] }); i++; }
+    else { out.push({ c: "add", t: b[j] }); j++; }
+  }
+  while (i < n) out.push({ c: "del", t: a[i++] });
+  while (j < m) out.push({ c: "add", t: b[j++] });
+  return out;
+}
+
+const IDE_HL_LANG = {
+  ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "typescript",
+  ".jsx": "javascript", ".json": "json", ".md": "markdown", ".html": "xml",
+  ".css": "css", ".yml": "yaml", ".yaml": "yaml", ".sh": "bash", ".sql": "sql",
+  ".java": "java", ".go": "go", ".rs": "rust", ".c": "c", ".cpp": "cpp",
+  ".rb": "ruby", ".php": "php", ".toml": "ini", ".ini": "ini",
+};
+
 function initWebIde(root = document) {
   const ide = root.querySelector("#web-ide");
   if (!ide || ide.dataset.ideBound === "1") return;
@@ -187,133 +220,67 @@ function initWebIde(root = document) {
   const runId = ide.dataset.runId;
   const fileList = ide.querySelector("#web-ide-file-list");
   const editor = ide.querySelector("#web-ide-content");
-  const editorHost = ide.querySelector("#web-ide-editor-host");
+  const preview = ide.querySelector("#web-ide-preview");
+  const previewCode = preview ? preview.querySelector("code") : null;
+  const diffView = ide.querySelector("#web-ide-diff");
   const current = ide.querySelector("#web-ide-current-file");
   const save = ide.querySelector("#web-ide-save");
   const status = ide.querySelector("#web-ide-status");
-  const diffToggle = ide.querySelector("#web-ide-diff-toggle");
+  const followToggle = ide.querySelector("#web-ide-follow");
+  const modeButtons = [...ide.querySelectorAll("[data-mode]")];
+
   let activePath = "";
-  let activeOriginalContent = "";
-  let monacoEditor = null;
-  let monacoDiffEditor = null;
-  let monacoOriginalModel = null;
-  let monacoModifiedModel = null;
-  let monacoCodeHost = null;
-  let monacoDiffHost = null;
-  let currentFiles = [];
+  let originalContent = "";
   let lastLoadedContent = "";
-  let lastLoadedPath = "";
+  let currentFiles = [];
+  let mode = "edit";
 
-  const extensionLanguage = {
-    ".py": "python",
-    ".js": "javascript",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".jsx": "javascript",
-    ".json": "json",
-    ".md": "markdown",
-    ".html": "html",
-    ".css": "css",
-    ".yml": "yaml",
-    ".yaml": "yaml",
-    ".sh": "shell",
-    ".sql": "sql",
-    ".txt": "plaintext",
-  };
-
-  const setStatus = (message) => {
-    status.textContent = message;
-  };
-
-  const languageForPath = (path) => {
+  const setStatus = (message) => { if (status) status.textContent = message; };
+  const langFor = (path) => {
     const dot = path.lastIndexOf(".");
-    if (dot < 0) return "plaintext";
-    const ext = path.slice(dot).toLowerCase();
-    return extensionLanguage[ext] || "plaintext";
+    return dot < 0 ? "" : (IDE_HL_LANG[path.slice(dot).toLowerCase()] || "");
   };
+  const getContent = () => editor.value;
+  const hasUnsaved = () => !!activePath && getContent() !== lastLoadedContent;
 
-  const loadMonaco = async () => {
-    if (window.monaco) return window.monaco;
-    if (!window.require || !window.require.config) {
-      const script = document.createElement("script");
-      script.src = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js";
-      await new Promise((resolve, reject) => {
-        script.onload = resolve;
-        script.onerror = reject;
-        document.head.appendChild(script);
-      });
-    }
-    window.require.config({ paths: { vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs" } });
-    await new Promise((resolve) => window.require(["vs/editor/editor.main"], resolve));
-    return window.monaco;
-  };
-
-  const ensureMonaco = async () => {
-    if (monacoEditor || monacoDiffEditor) return true;
-    if (!editorHost) return false;
-    try {
-      const monaco = await loadMonaco();
-      monaco.editor.setTheme("vs-dark");
-      monacoCodeHost = document.createElement("div");
-      monacoDiffHost = document.createElement("div");
-      monacoCodeHost.className = "web-ide-monaco";
-      monacoDiffHost.className = "web-ide-monaco";
-      editorHost.textContent = "";
-      editorHost.appendChild(monacoCodeHost);
-      editorHost.appendChild(monacoDiffHost);
-      monacoEditor = monaco.editor.create(monacoCodeHost, {
-        value: "",
-        language: "plaintext",
-        automaticLayout: true,
-        minimap: { enabled: false },
-        scrollBeyondLastLine: false,
-        fontSize: 13,
-        theme: "vs-dark",
-      });
-      monacoOriginalModel = monaco.editor.createModel("", "plaintext");
-      monacoModifiedModel = monaco.editor.createModel("", "plaintext");
-      monacoDiffEditor = monaco.editor.createDiffEditor(monacoDiffHost, {
-        automaticLayout: true,
-        renderSideBySide: true,
-        minimap: { enabled: false },
-        readOnly: true,
-        theme: "vs-dark",
-      });
-      monacoDiffEditor.setModel({ original: monacoOriginalModel, modified: monacoModifiedModel });
-      monacoDiffHost.style.display = "none";
-      return true;
-    } catch {
-      setStatus("Monaco failed to load; using plain editor");
-      return false;
+  const renderPreview = () => {
+    if (!previewCode) return;
+    previewCode.textContent = getContent();
+    const lang = langFor(activePath);
+    previewCode.className = lang ? "language-" + lang : "";
+    previewCode.removeAttribute("data-highlighted");
+    if (window.hljs) {
+      try { window.hljs.highlightElement(previewCode); } catch { /* highlight is best-effort */ }
     }
   };
 
-  const setEditorContent = async (path, content, originalContent) => {
-    const hasMonaco = await ensureMonaco();
-    if (!hasMonaco || !window.monaco || !editorHost) {
-      editor.value = content || "";
-      return;
+  const renderDiff = () => {
+    if (!diffView) return;
+    const rows = lineDiff(originalContent || "", getContent() || "");
+    if (rows.length > 8000) { diffView.textContent = "File too large to diff in the browser."; return; }
+    diffView.textContent = "";
+    let changed = false;
+    for (const row of rows) {
+      if (row.c !== "ctx") changed = true;
+      const span = document.createElement("span");
+      span.className = "diff-" + row.c;
+      span.textContent = (row.c === "add" ? "+" : row.c === "del" ? "-" : " ") + row.t;
+      diffView.appendChild(span);
     }
-    const language = languageForPath(path);
-    monacoModifiedModel.setValue(content || "");
-    window.monaco.editor.setModelLanguage(monacoModifiedModel, language);
-    monacoOriginalModel.setValue(originalContent || "");
-    window.monaco.editor.setModelLanguage(monacoOriginalModel, language);
-    monacoEditor.setModel(monacoModifiedModel);
-    const diffOn = !!(diffToggle && diffToggle.checked);
-    monacoCodeHost.style.display = diffOn ? "none" : "block";
-    monacoDiffHost.style.display = diffOn ? "block" : "none";
+    if (!changed) diffView.textContent = "No changes versus HEAD.";
   };
 
-  const getEditorContent = () => {
-    if (monacoModifiedModel) return monacoModifiedModel.getValue();
-    return editor.value;
+  const applyMode = () => {
+    editor.classList.toggle("hidden", mode !== "edit");
+    if (preview) preview.classList.toggle("hidden", mode !== "preview");
+    if (diffView) diffView.classList.toggle("hidden", mode !== "diff");
+    for (const button of modeButtons) button.classList.toggle("secondary", button.dataset.mode !== mode);
+    if (mode === "preview") renderPreview();
+    if (mode === "diff") renderDiff();
   };
 
-  const hasUnsavedChanges = () => {
-    if (!activePath) return false;
-    return getEditorContent() !== lastLoadedContent;
-  };
+  const setMode = (next) => { mode = next; applyMode(); };
+  for (const button of modeButtons) button.addEventListener("click", () => setMode(button.dataset.mode));
 
   const setFiles = (files) => {
     currentFiles = files;
@@ -329,9 +296,7 @@ function initWebIde(root = document) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "web-ide-file";
-      if (file.path === activePath) {
-        button.classList.add("active");
-      }
+      if (file.path === activePath) button.classList.add("active");
       button.textContent = file.path;
       button.addEventListener("click", () => loadFile(file.path));
       fileList.appendChild(button);
@@ -342,19 +307,16 @@ function initWebIde(root = document) {
     setStatus("Loading...");
     const response = await fetch(`/runs/${runId}/workspace/file?path=${encodeURIComponent(path)}`, { cache: "no-store" });
     const data = await response.json();
-    if (!response.ok) {
-      setStatus(data.error || "Could not open file");
-      return;
-    }
+    if (!response.ok) { setStatus(data.error || "Could not open file"); return; }
     activePath = data.path;
-    activeOriginalContent = data.original_content || "";
-    lastLoadedPath = activePath;
+    originalContent = data.original_content || "";
     lastLoadedContent = data.content || "";
+    editor.value = lastLoadedContent;
     current.textContent = activePath;
-    await setEditorContent(activePath, data.content || "", activeOriginalContent);
     setFiles(currentFiles);
     save.disabled = false;
     setStatus("Ready");
+    applyMode();
   };
 
   const loadFiles = async () => {
@@ -362,16 +324,8 @@ function initWebIde(root = document) {
       const response = await fetch(`/runs/${runId}/workspace/files`, { cache: "no-store" });
       const files = await response.json();
       setFiles(files);
-      if (!files.length) {
-        setStatus("Workspace unavailable");
-        return;
-      }
-      if (activePath) {
-        const exists = files.some((file) => file.path === activePath);
-        if (exists) {
-          return;
-        }
-      }
+      if (!files.length) { setStatus("Workspace unavailable"); return; }
+      if (activePath && files.some((file) => file.path === activePath)) return;
       await loadFile(files[0].path);
     } catch {
       fileList.textContent = "";
@@ -383,11 +337,16 @@ function initWebIde(root = document) {
     }
   };
 
+  editor.addEventListener("input", () => {
+    if (mode === "preview") renderPreview();
+    else if (mode === "diff") renderDiff();
+  });
+
   save.addEventListener("click", async () => {
     if (!activePath) return;
     save.disabled = true;
     setStatus("Saving...");
-    const body = new URLSearchParams({ path: activePath, content: getEditorContent() });
+    const body = new URLSearchParams({ path: activePath, content: getContent() });
     const response = await fetch(`/runs/${runId}/workspace/file`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -395,52 +354,34 @@ function initWebIde(root = document) {
     });
     const data = await response.json();
     save.disabled = false;
-    if (!response.ok) {
-      setStatus(data.error || "Save failed");
-      announce("Save failed");
-      return;
-    }
-    lastLoadedContent = getEditorContent();
+    if (!response.ok) { setStatus(data.error || "Save failed"); announce("Save failed"); return; }
+    lastLoadedContent = getContent();
     setStatus("Saved");
     announce("File saved");
   });
 
   loadFiles();
 
-  if (diffToggle) {
-    diffToggle.addEventListener("change", async () => {
-      if (!activePath) return;
-      await setEditorContent(activePath, getEditorContent(), activeOriginalContent);
-    });
-  }
-
   const autoRefresh = async () => {
+    if (followToggle && !followToggle.checked) return;
     try {
       const response = await fetch(`/runs/${runId}/workspace/files`, { cache: "no-store" });
       if (!response.ok) return;
       const files = await response.json();
       const oldSignature = currentFiles.map((file) => file.path).join("|");
       const newSignature = files.map((file) => file.path).join("|");
-      if (oldSignature !== newSignature) {
-        setFiles(files);
-      } else if (activePath) {
-        setFiles(currentFiles);
-      }
-      if (!activePath || hasUnsavedChanges()) {
-        if (hasUnsavedChanges()) {
-          setStatus("Live updates paused: unsaved edits.");
-        }
-        return;
-      }
+      if (oldSignature !== newSignature) setFiles(files);
+      if (!activePath) return;
+      if (hasUnsaved()) { setStatus("Live updates paused: unsaved edits."); return; }
       const fileResponse = await fetch(`/runs/${runId}/workspace/file?path=${encodeURIComponent(activePath)}`, { cache: "no-store" });
       if (!fileResponse.ok) return;
       const fileData = await fileResponse.json();
       const remoteContent = fileData.content || "";
-      const remoteOriginal = fileData.original_content || "";
-      if (activePath === lastLoadedPath && remoteContent !== lastLoadedContent) {
-        activeOriginalContent = remoteOriginal;
+      if (remoteContent !== lastLoadedContent) {
+        originalContent = fileData.original_content || "";
         lastLoadedContent = remoteContent;
-        await setEditorContent(activePath, remoteContent, remoteOriginal);
+        editor.value = remoteContent;
+        applyMode();
         setStatus("Updated from live workspace.");
       }
     } catch {
