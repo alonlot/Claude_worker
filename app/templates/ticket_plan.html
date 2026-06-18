@@ -50,6 +50,24 @@
     <div class="inline-alert">
       Planning is optional. Build now will use direct Claude discovery if no plan exists.
     </div>
+
+    <div class="section-title">
+      <h3>Skills for this ticket</h3>
+      <p>Pick from your liked skills (<a class="text-link" href="/skills">manage skills</a>). Selected skills guide the implementation agent.</p>
+    </div>
+    {% if liked_skills %}
+    <form method="post" action="/queue/{{ item.id }}/skills" class="stack">
+      {% for skill in liked_skills %}
+      <label class="check">
+        <input type="checkbox" name="skill_ids" value="{{ skill.id }}" {% if skill.id in selected_skill_ids %}checked{% endif %}>
+        <strong>{{ skill.name }}</strong> — {{ skill.description }}
+      </label>
+      {% endfor %}
+      <button class="secondary" data-loading-text="Saving...">Attach selected skills</button>
+    </form>
+    {% else %}
+    <p class="empty">You have no liked skills yet. Like some in the <a class="text-link" href="/skills">Marketplace</a>.</p>
+    {% endif %}
   </div>
 </section>
 {% endblock %}

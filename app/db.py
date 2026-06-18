@@ -107,11 +107,30 @@ CREATE TABLE IF NOT EXISTS ticket_plans (
     plan_text TEXT NOT NULL DEFAULT '',
     user_notes TEXT NOT NULL DEFAULT '',
     raw_output TEXT NOT NULL DEFAULT '',
+    skill_ids TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_ticket_plans_queue ON ticket_plans(queue_item_id);
+
+CREATE TABLE IF NOT EXISTS skills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    visibility TEXT NOT NULL DEFAULT 'private',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS skill_likes (
+    username TEXT NOT NULL,
+    skill_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (username, skill_id)
+);
 
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -253,6 +272,10 @@ class Database:
         }.items():
             if name not in runs_columns:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {definition}")
+
+        plan_columns = {row["name"] for row in conn.execute("PRAGMA table_info(ticket_plans)").fetchall()}
+        if "skill_ids" not in plan_columns:
+            conn.execute("ALTER TABLE ticket_plans ADD COLUMN skill_ids TEXT NOT NULL DEFAULT ''")
 
         # Backfill the owner column on databases created before multi-user support.
         for table in SIMPLE_OWNED_TABLES:
@@ -734,6 +757,103 @@ class Database:
             """,
             (response, response_url, note_id),
         )
+
+    # ----- skills ---------------------------------------------------------
+
+    def create_skill(
+        self,
+        owner: str,
+        name: str,
+        description: str = "",
+        content: str = "",
+        visibility: str = "private",
+    ) -> int:
+        visibility = "public" if visibility == "public" else "private"
+        with self.connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO skills(owner, name, description, content, visibility) VALUES (?, ?, ?, ?, ?)",
+                (owner, name, description, content, visibility),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def update_skill(
+        self,
+        skill_id: int,
+        owner: str,
+        name: str,
+        description: str,
+        content: str,
+        visibility: str,
+    ) -> bool:
+        visibility = "public" if visibility == "public" else "private"
+        existing = self.fetchone("SELECT owner FROM skills WHERE id=?", (skill_id,))
+        if not existing or existing["owner"] != owner:
+            return False
+        self.execute(
+            """
+            UPDATE skills SET name=?, description=?, content=?, visibility=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND owner=?
+            """,
+            (name, description, content, visibility, skill_id, owner),
+        )
+        return True
+
+    def delete_skill(self, skill_id: int, owner: str) -> bool:
+        existing = self.fetchone("SELECT owner FROM skills WHERE id=?", (skill_id,))
+        if not existing or existing["owner"] != owner:
+            return False
+        self.execute("DELETE FROM skills WHERE id=? AND owner=?", (skill_id, owner))
+        self.execute("DELETE FROM skill_likes WHERE skill_id=?", (skill_id,))
+        return True
+
+    def get_skill(self, skill_id: int) -> sqlite3.Row | None:
+        return self.fetchone("SELECT * FROM skills WHERE id=?", (skill_id,))
+
+    def list_skills(self, owner: str) -> list[sqlite3.Row]:
+        return self.fetchall("SELECT * FROM skills WHERE owner=? ORDER BY name", (owner,))
+
+    def list_public_skills(self) -> list[sqlite3.Row]:
+        return self.fetchall(
+            """
+            SELECT s.*, COALESCE(l.like_count, 0) AS like_count
+            FROM skills s
+            LEFT JOIN (SELECT skill_id, COUNT(*) AS like_count FROM skill_likes GROUP BY skill_id) l
+              ON l.skill_id = s.id
+            WHERE s.visibility='public'
+            ORDER BY like_count DESC, s.name
+            """
+        )
+
+    def like_skill(self, username: str, skill_id: int) -> None:
+        self.execute(
+            "INSERT OR IGNORE INTO skill_likes(username, skill_id) VALUES (?, ?)",
+            (username, skill_id),
+        )
+
+    def unlike_skill(self, username: str, skill_id: int) -> None:
+        self.execute("DELETE FROM skill_likes WHERE username=? AND skill_id=?", (username, skill_id))
+
+    def liked_skill_ids(self, username: str) -> set[int]:
+        rows = self.fetchall("SELECT skill_id FROM skill_likes WHERE username=?", (username,))
+        return {int(row["skill_id"]) for row in rows}
+
+    def liked_skills(self, username: str) -> list[sqlite3.Row]:
+        return self.fetchall(
+            """
+            SELECT s.* FROM skills s
+            JOIN skill_likes l ON l.skill_id = s.id
+            WHERE l.username=?
+            ORDER BY s.name
+            """,
+            (username,),
+        )
+
+    def skills_by_ids(self, skill_ids: list[int]) -> list[sqlite3.Row]:
+        if not skill_ids:
+            return []
+        placeholders = ",".join("?" for _ in skill_ids)
+        return self.fetchall(f"SELECT * FROM skills WHERE id IN ({placeholders})", tuple(skill_ids))
 
     def reorder_queue(self, ordered_ids: list[int]) -> None:
         with self.connect() as conn:

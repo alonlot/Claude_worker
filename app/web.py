@@ -273,10 +273,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     @app.get("/queue/{queue_id}/plan", response_class=HTMLResponse)
     async def queue_plan(queue_id: int, request: Request):
+        owner = owner_of(request)
         item = db.queue_item(queue_id)
-        if not item or item["owner"] != owner_of(request):
+        if not item or item["owner"] != owner:
             request.app.state.flash = "Queue item not found."
             return RedirectResponse("/", status_code=303)
+        plan = db.plan_for_queue_item(queue_id)
+        selected = set()
+        if plan and plan["skill_ids"]:
+            selected = {int(part) for part in plan["skill_ids"].split(",") if part.strip().isdigit()}
         return templates.TemplateResponse(
             request,
             "ticket_plan.html",
@@ -286,7 +291,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "user": current_user(request),
                 "flash": pop_flash(request),
                 "item": item,
-                "plan": db.plan_for_queue_item(queue_id),
+                "plan": plan,
+                "liked_skills": db.liked_skills(owner),
+                "selected_skill_ids": selected,
             },
         )
 
@@ -719,6 +726,91 @@ def create_app(config: Config, db: Database) -> FastAPI:
         owner = owner_of(request)
         ucfg = registry.user_config(owner)
         return templates.TemplateResponse(request, "_dashboard_live.html", context(request, db, ucfg, owner, registry))
+
+    # ---------------- skills ----------------
+
+    @app.get("/skills", response_class=HTMLResponse)
+    async def skills_page(request: Request):
+        owner = owner_of(request)
+        liked_ids = db.liked_skill_ids(owner)
+        return templates.TemplateResponse(
+            request,
+            "skills.html",
+            {
+                "request": request,
+                "title": registry.user_config(owner).ui.title,
+                "user": current_user(request),
+                "flash": pop_flash(request),
+                "my_skills": db.list_skills(owner),
+                "public_skills": db.list_public_skills(),
+                "liked_skills": db.liked_skills(owner),
+                "liked_ids": liked_ids,
+            },
+        )
+
+    @app.post("/skills/create")
+    async def create_skill(
+        request: Request,
+        name: str = Form(...),
+        description: str = Form(""),
+        content: str = Form(""),
+        visibility: str = Form("private"),
+    ):
+        owner = owner_of(request)
+        if name.strip():
+            db.create_skill(owner, name.strip(), description.strip(), content, visibility)
+            request.app.state.flash = f"Skill '{name.strip()}' created."
+        return RedirectResponse("/skills", status_code=303)
+
+    @app.post("/skills/{skill_id}/update")
+    async def update_skill(
+        skill_id: int,
+        request: Request,
+        name: str = Form(...),
+        description: str = Form(""),
+        content: str = Form(""),
+        visibility: str = Form("private"),
+    ):
+        if db.update_skill(skill_id, owner_of(request), name.strip(), description.strip(), content, visibility):
+            request.app.state.flash = "Skill updated."
+        else:
+            request.app.state.flash = "You can only edit your own skills."
+        return RedirectResponse("/skills", status_code=303)
+
+    @app.post("/skills/{skill_id}/delete")
+    async def delete_skill(skill_id: int, request: Request):
+        db.delete_skill(skill_id, owner_of(request))
+        request.app.state.flash = "Skill removed."
+        return RedirectResponse("/skills", status_code=303)
+
+    @app.post("/skills/{skill_id}/like")
+    async def like_skill(skill_id: int, request: Request):
+        db.like_skill(owner_of(request), skill_id)
+        return RedirectResponse("/skills", status_code=303)
+
+    @app.post("/skills/{skill_id}/unlike")
+    async def unlike_skill(skill_id: int, request: Request):
+        db.unlike_skill(owner_of(request), skill_id)
+        return RedirectResponse("/skills", status_code=303)
+
+    @app.post("/queue/{queue_id}/skills")
+    async def attach_plan_skills(queue_id: int, request: Request, skill_ids: list[int] = Form(default=[])):
+        owner = owner_of(request)
+        item = db.queue_item(queue_id)
+        if not item or item["owner"] != owner:
+            return RedirectResponse("/", status_code=303)
+        plan = db.plan_for_queue_item(queue_id)
+        liked = db.liked_skill_ids(owner)
+        chosen = [sid for sid in skill_ids if sid in liked]
+        if plan:
+            db.execute(
+                "UPDATE ticket_plans SET skill_ids=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (",".join(str(sid) for sid in chosen), plan["id"]),
+            )
+            request.app.state.flash = f"Attached {len(chosen)} skill(s) to the plan."
+        else:
+            request.app.state.flash = "Create a plan first, then attach skills."
+        return RedirectResponse(f"/queue/{queue_id}/plan", status_code=303)
 
     # ---------------- settings ----------------
 

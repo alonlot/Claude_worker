@@ -180,10 +180,17 @@ def planning_prompt(
     default_base_branch: str = "main",
     previous_plan: str = "",
     user_notes: str = "",
+    skills_hint: str = "",
 ) -> str:
+    skills_block = ""
+    if skills_hint:
+        skills_block = (
+            "\n\nThe user has liked the following reusable skills (conventions/guidance). "
+            "In plan_text, suggest which of these apply to this ticket and why:\n" + skills_hint
+        )
     return f"""
 You are preparing a human-approved build plan for a Jira automation worker.
-Return only JSON with keys: repo_url, base_branch, summary, mission, plan_text.
+Return only JSON with keys: repo_url, base_branch, summary, mission, plan_text.{skills_block}
 
 The Python worker owns every Git command. Claude must not clone, checkout, commit, push, rebase, merge, reset, or run Git.
 Use this configured default repo_url unless the ticket or user notes explicitly say otherwise:

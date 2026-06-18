@@ -142,6 +142,8 @@ class Worker:
         previous = ""
         if existing:
             previous = f"Mission:\n{existing['mission']}\n\nPlan:\n{existing['plan_text']}"
+        liked = self.db.liked_skills(self.owner)
+        skills_hint = "\n".join(f"- {row['name']}: {row['description']}" for row in liked)
         output = await self.claude.run_prompt(
             "plan",
             planning_prompt(
@@ -150,6 +152,7 @@ class Worker:
                 self.config.git.default_base_branch,
                 previous,
                 user_notes,
+                skills_hint,
             ),
         )
         parsed = parse_plan(output)
@@ -233,7 +236,8 @@ class Worker:
         plan_context = ""
         if plan:
             plan_context = f"\n\nApproved mission:\n{plan['mission']}\n\nApproved plan:\n{plan['plan_text']}\n"
-        impl_prompt = implementation_prompt(ticket, branch) + plan_context + self._consume_agent_inputs(run_id)
+        skills_context = self._selected_skills_context(plan)
+        impl_prompt = implementation_prompt(ticket, branch) + plan_context + skills_context + self._consume_agent_inputs(run_id)
         self.db.upsert_sub_agent(run_id, "claude-implementation", "Implement the Jira ticket", "running", 30)
         impl_output = await self.claude.run_prompt("claude", impl_prompt, cwd=repo_path)
         impl_output = await self._resolve_agent_questions(run_id, impl_output, repo_path)
@@ -568,6 +572,19 @@ Tasks:
         self.db.upsert_sub_agent(run_id, "claude-implementation", "Apply the user's answers", "running", 70)
         followup_output = await self.claude.run_prompt("claude", followup, cwd=repo_path)
         return output + "\n" + followup_output
+
+    def _selected_skills_context(self, plan: Any) -> str:
+        if not plan:
+            return ""
+        raw = plan["skill_ids"] if "skill_ids" in plan.keys() else ""
+        skill_ids = [int(part) for part in str(raw or "").split(",") if part.strip().isdigit()]
+        skills = self.db.skills_by_ids(skill_ids)
+        if not skills:
+            return ""
+        body = "\n\n".join(f"## Skill: {row['name']}\n{row['content']}" for row in skills)
+        return (
+            "\n\nFollow these selected team skills (conventions, testing, review rules):\n" + body + "\n"
+        )
 
     def _consume_agent_inputs(self, run_id: int) -> str:
         rows = self.db.unconsumed_agent_inputs(run_id)

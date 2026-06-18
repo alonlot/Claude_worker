@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="grid skills-grid">
+  <div class="panel">
+    <div class="section-title">
+      <h2>Create a Skill</h2>
+      <p>Reusable guidance for the agent — code conventions, how to test, review rules, etc.</p>
+    </div>
+    <form method="post" action="/skills/create" class="settings-form">
+      <label>Name <input name="name" placeholder="How we write tests" required></label>
+      <label>Description <input name="description" placeholder="Short summary shown in the marketplace"></label>
+      <label class="wide">Content
+        <textarea class="compact message-box" name="content" placeholder="The full guidance the agent should follow."></textarea>
+      </label>
+      <label class="check"><input type="checkbox" name="visibility" value="public"> Publish to the marketplace</label>
+      <button data-loading-text="Saving...">Create skill</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
+      <h2>My Skills</h2>
+      <p>Skills you own. Edit, publish, or remove them.</p>
+    </div>
+    <div class="list">
+      {% for skill in my_skills %}
+      <article class="skill-card">
+        <details>
+          <summary>
+            <strong>{{ skill.name }}</strong>
+            <span class="pill">{{ skill.visibility }}</span>
+          </summary>
+          <form method="post" action="/skills/{{ skill.id }}/update" class="settings-form">
+            <label>Name <input name="name" value="{{ skill.name }}" required></label>
+            <label>Description <input name="description" value="{{ skill.description }}"></label>
+            <label class="wide">Content <textarea class="compact message-box" name="content">{{ skill.content }}</textarea></label>
+            <label class="check"><input type="checkbox" name="visibility" value="public" {% if skill.visibility == "public" %}checked{% endif %}> Public</label>
+            <div class="row">
+              <button class="secondary" data-loading-text="Saving...">Save</button>
+            </div>
+          </form>
+          <form method="post" action="/skills/{{ skill.id }}/delete" onsubmit="return confirm('Delete this skill?');">
+            <button class="danger" data-loading-text="Deleting...">Delete</button>
+          </form>
+        </details>
+      </article>
+      {% else %}
+      <p class="empty">No skills yet. Create one on the left.</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="section-title">
+    <h2>Marketplace</h2>
+    <p>Public skills shared by everyone. Like the ones you want to use; liked skills can be attached to a ticket plan.</p>
+  </div>
+  <div class="list skills-market">
+    {% for skill in public_skills %}
+    <article class="skill-card">
+      <div class="ticket-focus-head">
+        <strong>{{ skill.name }}</strong>
+        <span class="pill">♥ {{ skill.like_count }}</span>
+      </div>
+      <p>{{ skill.description or "No description." }}</p>
+      <small>by {{ skill.owner }}</small>
+      <details>
+        <summary>View content</summary>
+        <pre>{{ skill.content }}</pre>
+      </details>
+      <div class="row">
+        {% if skill.id in liked_ids %}
+        <form method="post" action="/skills/{{ skill.id }}/unlike"><button class="secondary">♥ Liked — unlike</button></form>
+        {% else %}
+        <form method="post" action="/skills/{{ skill.id }}/like"><button>♡ Like</button></form>
+        {% endif %}
+      </div>
+    </article>
+    {% else %}
+    <p class="empty">No public skills yet. Publish one to share it.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
