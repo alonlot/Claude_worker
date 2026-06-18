@@ -4,6 +4,15 @@ Multi-user web app for controlling a Jira-to-Claude automation worker. Designed 
 
 The website is the control surface. The Python worker scans Jira, asks Claude for ticket routing JSON, clones and checks out the target Git branch itself, runs Claude for implementation and review, records logs/progress in SQLite, and lets the user push when ready.
 
+## Workflow features
+
+- **Agent asks & waits**: during implementation Claude can emit `ASK_USER: question || A || B || C`; the run blocks and the question appears in the UI until the user answers, then the answer is fed back to Claude.
+- **Live updates**: the ticket plan and the run interaction panel refresh in place (htmx polling) — a finished plan or a new mid-run question shows up without reloading. The message box is preserved while typing.
+- **Push review & auto-push**: the Push Review page shows the full colorized diff and lets you push or open a PR/MR. Per-user `git.auto_push` / `git.auto_merge_request` automate this for clean runs.
+- **Take a look locally**: a finished run can be `scp`'d to your own machine over SSH using per-user delivery settings (host/user/path/key/port).
+- **Skills**: create reusable guidance (code conventions, testing rules), publish to a marketplace, like others' skills, and attach your liked skills to a ticket plan — selected skills are injected into the implementation prompt.
+- **Air-gapped Web IDE**: built-in editor with syntax highlighting, diff-vs-HEAD, and follow-changes. htmx and highlight.js are vendored locally (`app/static/vendor`), so it works on an isolated network with no CDN calls.
+
 ## Multi-user model
 
 - **Authentication is pluggable** (`app/auth.py`). Ships with two providers, chosen by `auth.provider`:
