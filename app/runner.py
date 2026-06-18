@@ -12,6 +12,7 @@ from app.claude_runner import (
     cr_fix_prompt,
     discovery_prompt,
     implementation_prompt,
+    parse_ask_user,
     parse_plan,
     planning_prompt,
     parse_discovery,
@@ -234,6 +235,7 @@ class Worker:
         impl_prompt = implementation_prompt(ticket, branch) + plan_context + self._consume_agent_inputs(run_id)
         self.db.upsert_sub_agent(run_id, "claude-implementation", "Implement the Jira ticket", "running", 30)
         impl_output = await self.claude.run_prompt("claude", impl_prompt, cwd=repo_path)
+        impl_output = await self._resolve_agent_questions(run_id, impl_output, repo_path)
         self.db.upsert_sub_agent(run_id, "claude-implementation", "Implement the Jira ticket", "done", 100)
         self.db.update_run(run_id, progress=max(70, self._progress_from_output(impl_output, 70)))
         git_status = self.git.status(repo_path)
@@ -467,6 +469,46 @@ Tasks:
     def _raise_if_cancelled(self) -> None:
         if self.cancel_requested:
             raise asyncio.CancelledError()
+
+    async def _ask_user(self, run_id: int, question: str, options: list[str], agent_name: str = "main") -> str:
+        """Insert a pending question and block the run until the user answers it.
+
+        The UI surfaces pending questions on the dashboard and run page; the user
+        answers there. Cancellation interrupts the wait.
+        """
+        question_id = self.db.create_agent_question(
+            run_id, question, options, agent_name=agent_name, owner=self.owner
+        )
+        self._log(run_id, "ask", f"Waiting for the user to answer: {question}")
+        while True:
+            self._raise_if_cancelled()
+            row = self.db.fetchone("SELECT state, answer FROM agent_questions WHERE id=?", (question_id,))
+            if row and row["state"] == "answered":
+                self._log(run_id, "ask", f"User answered #{question_id}: {row['answer']}")
+                return str(row["answer"])
+            await asyncio.sleep(2)
+
+    async def _resolve_agent_questions(self, run_id: int, output: str, repo_path: Path) -> str:
+        """If the agent emitted ASK_USER markers, wait for answers and let it react.
+
+        Returns the (possibly extended) agent output so downstream progress parsing
+        still works.
+        """
+        pending = parse_ask_user(output)
+        if not pending:
+            return output
+        answered: list[tuple[str, str]] = []
+        for item in pending:
+            answer = await self._ask_user(run_id, str(item["question"]), list(item["options"]))
+            answered.append((str(item["question"]), answer))
+        followup = (
+            "The user answered the questions you asked. Apply any changes needed in the working tree.\n"
+            "Do not run git commands.\n\n"
+            + "\n".join(f"- {question} => {answer}" for question, answer in answered)
+        )
+        self.db.upsert_sub_agent(run_id, "claude-implementation", "Apply the user's answers", "running", 70)
+        followup_output = await self.claude.run_prompt("claude", followup, cwd=repo_path)
+        return output + "\n" + followup_output
 
     def _consume_agent_inputs(self, run_id: int) -> str:
         rows = self.db.unconsumed_agent_inputs(run_id)

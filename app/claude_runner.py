@@ -103,6 +103,28 @@ class ClaudeRunner:
             self.current_process.terminate()
 
 
+def parse_ask_user(output: str) -> list[dict[str, object]]:
+    """Find ASK_USER marker lines emitted by the agent.
+
+    Protocol (documented in implementation_prompt):
+        ASK_USER: question text || option A || option B || option C
+
+    Options are optional; up to three are kept. Returns one dict per question
+    with keys "question" and "options".
+    """
+    questions: list[dict[str, object]] = []
+    for line in output.splitlines():
+        match = re.match(r"\s*ASK_USER:\s*(.+)$", line)
+        if not match:
+            continue
+        parts = [part.strip() for part in match.group(1).split("||")]
+        question = parts[0].strip()
+        options = [opt for opt in parts[1:] if opt][:3]
+        if question:
+            questions.append({"question": question, "options": options})
+    return questions
+
+
 def parse_discovery(output: str) -> dict[str, str]:
     match = re.search(r"\{.*\}", output, re.DOTALL)
     if not match:
@@ -201,6 +223,10 @@ Important rules:
 - Python automation owns all Git interactions.
 - You may spawn subagents when the ticket naturally splits across independent components.
 - Update progress in plain text when major phases complete using lines like: PROGRESS 40%.
+- If you need a decision from the user before you can proceed correctly, ask by printing a line:
+      ASK_USER: your question || option A || option B || option C
+  The options are optional. The worker will pause, collect the user's answer, and
+  give it to you in a follow-up message. Ask only when it genuinely blocks you.
 
 Ticket title: {ticket.get('summary', '')}
 Ticket URL: {ticket.get('url', '')}
