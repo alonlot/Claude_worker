@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import shlex
+import subprocess
 import contextlib
 from pathlib import Path
 from typing import Callable
 
 from app.config import Config, secret_values
+from app.execution import ExecutionBackend, Invocation, SubprocessBackend, get_execution_backend
 from app.utils import mask_secrets
 
 
@@ -17,10 +18,19 @@ LogFn = Callable[[str, str], None]
 
 
 class ClaudeRunner:
-    def __init__(self, config: Config, log: LogFn):
+    def __init__(
+        self,
+        config: Config,
+        log: LogFn,
+        backend: ExecutionBackend | None = None,
+        label_prefix: str = "claude",
+    ):
         self.config = config
         self.log = log
+        self.backend = backend or get_execution_backend(config)
+        self.label_prefix = label_prefix
         self.current_process: asyncio.subprocess.Process | None = None
+        self._cancel_argv: list[str] | None = None
 
     def command(self) -> list[str]:
         base = shlex.split(self.config.claude.command)
@@ -29,19 +39,25 @@ class ClaudeRunner:
             args.extend(["--model", self.config.claude.model])
         return base + args
 
-    async def run_prompt(self, phase: str, prompt: str, cwd: str | Path | None = None) -> str:
-        env = os.environ.copy()
+    def _agent_env(self) -> dict[str, str]:
+        env: dict[str, str] = {}
         if self.config.claude.api_key:
             env["ANTHROPIC_API_KEY"] = self.config.claude.api_key
-        cmd = self.command()
-        self.log(phase, f"$ {' '.join(shlex.quote(part) for part in cmd)}")
+        return env
+
+    async def run_prompt(self, phase: str, prompt: str, cwd: str | Path | None = None) -> str:
+        label = f"{self.label_prefix}_{phase}"
+        invocation: Invocation = self.backend.build(self.command(), cwd, self._agent_env(), label)
+        self._cancel_argv = invocation.cancel_argv
+        display = " ".join(shlex.quote(part) for part in invocation.argv)
+        self.log(phase, f"[{self.backend.name}] $ {display}")
         proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(cwd) if cwd else None,
+            *invocation.argv,
+            cwd=invocation.cwd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=env,
+            env=invocation.env,
         )
         self.current_process = proc
         assert proc.stdin is not None
@@ -72,11 +88,17 @@ class ClaudeRunner:
             await asyncio.wait_for(proc.wait(), timeout=2)
         finally:
             self.current_process = None
+            self._cancel_argv = None
         if proc.returncode != 0:
             raise RuntimeError(f"Claude exited with code {proc.returncode}")
         return "\n".join(output)
 
     def cancel(self) -> None:
+        # In Docker mode the spawned process is the `docker run` client; stopping
+        # the container itself requires `docker kill`.
+        if self._cancel_argv:
+            with contextlib.suppress(Exception):
+                subprocess.run(self._cancel_argv, capture_output=True, timeout=15)
         if self.current_process and self.current_process.returncode is None:
             self.current_process.terminate()
 

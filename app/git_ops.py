@@ -4,7 +4,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from app.config import Config, secret_values
+from app.config import Config, DEFAULT_OWNER, secret_values
 from app.utils import ensure_child_path, inject_token_into_url, mask_secrets
 
 
@@ -13,8 +13,13 @@ class GitError(RuntimeError):
 
 
 class GitOps:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, owner: str = DEFAULT_OWNER):
         self.config = config
+        self.owner = owner
+
+    def workspace_root(self) -> Path:
+        """Per-user clone root: <workspace_dir>/<owner>."""
+        return Path(self.config.app.workspace_dir) / self.owner
 
     def run(self, args: list[str], cwd: str | Path | None = None) -> str:
         proc = subprocess.run(
@@ -31,7 +36,7 @@ class GitOps:
         return output
 
     def clone_for_ticket(self, ticket_key: str, repo_url: str) -> Path:
-        workspace_root = Path(self.config.app.workspace_dir)
+        workspace_root = self.workspace_root()
         workspace_root.mkdir(parents=True, exist_ok=True)
         target = ensure_child_path(workspace_root, workspace_root / ticket_key)
         if target.exists():
@@ -86,7 +91,7 @@ class GitOps:
 
     def cleanup_old_clones(self) -> None:
         limit = max(0, int(self.config.app.clone_retention_limit))
-        root = Path(self.config.app.workspace_dir)
+        root = self.workspace_root()
         if limit <= 0 or not root.exists():
             return
         dirs = [path for path in root.iterdir() if path.is_dir()]

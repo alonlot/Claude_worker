@@ -1116,3 +1116,30 @@ textarea:not(.compact) {
   .execution-studio .terminal,
   .execution-studio .terminal.tall { min-height: 240px; max-height: 300px; }
 }
+
+/* Auth: nav user chip, sign-out, and login page */
+.topbar nav { display: flex; align-items: center; gap: 14px; }
+.nav-user {
+  font-size: 0.85rem;
+  opacity: 0.85;
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.nav-logout { margin: 0; }
+.linklike {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  opacity: 0.85;
+  text-decoration: underline;
+}
+.linklike:hover { opacity: 1; }
+.login-shell { max-width: 460px; margin: 8vh auto 0; }
+.login-panel { padding: 28px; }
+.login-panel .settings-form label { display: block; margin-bottom: 14px; }
+.login-panel input { width: 100%; }

@@ -1,15 +1,76 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
+
+from app.config import DEFAULT_OWNER
+
+
+# Owned tables keyed by an INTEGER id: adding an `owner` column is a plain ALTER.
+SIMPLE_OWNED_TABLES = (
+    "queue_items",
+    "runs",
+    "ticket_plans",
+    "code_review_notes",
+    "notifications",
+)
+
+# Owned tables with a natural primary key that must become composite (owner, key).
+# A legacy single-column PK can't be altered in place, so these are rebuilt.
+# Maps table name -> CREATE TABLE statement used when rebuilding.
+REBUILD_OWNED_TABLES = {
+    "tickets": """
+        CREATE TABLE tickets (
+            key TEXT NOT NULL,
+            owner TEXT NOT NULL DEFAULT 'local',
+            summary TEXT NOT NULL,
+            status TEXT NOT NULL,
+            url TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            labels TEXT NOT NULL DEFAULT '',
+            eligibility TEXT NOT NULL DEFAULT 'discovered',
+            skip_reason TEXT NOT NULL DEFAULT '',
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (owner, key)
+        )
+    """,
+    "app_state": """
+        CREATE TABLE app_state (
+            key TEXT NOT NULL,
+            owner TEXT NOT NULL DEFAULT 'local',
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (owner, key)
+        )
+    """,
+}
 
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 
+CREATE TABLE IF NOT EXISTS users (
+    username TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT 'user',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_login_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS user_configs (
+    username TEXT PRIMARY KEY,
+    data TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS tickets (
-    key TEXT PRIMARY KEY,
+    key TEXT NOT NULL,
+    owner TEXT NOT NULL DEFAULT 'local',
     summary TEXT NOT NULL,
     status TEXT NOT NULL,
     url TEXT NOT NULL DEFAULT '',
@@ -19,12 +80,14 @@ CREATE TABLE IF NOT EXISTS tickets (
     skip_reason TEXT NOT NULL DEFAULT '',
     last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (owner, key)
 );
 
 CREATE TABLE IF NOT EXISTS queue_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticket_key TEXT NOT NULL,
+    owner TEXT NOT NULL DEFAULT 'local',
     priority INTEGER NOT NULL DEFAULT 0,
     state TEXT NOT NULL DEFAULT 'queued',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -34,6 +97,7 @@ CREATE TABLE IF NOT EXISTS queue_items (
 CREATE TABLE IF NOT EXISTS ticket_plans (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticket_key TEXT NOT NULL,
+    owner TEXT NOT NULL DEFAULT 'local',
     queue_item_id INTEGER,
     state TEXT NOT NULL DEFAULT 'draft',
     repo_url TEXT NOT NULL DEFAULT '',
@@ -52,6 +116,7 @@ CREATE INDEX IF NOT EXISTS idx_ticket_plans_queue ON ticket_plans(queue_item_id)
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticket_key TEXT NOT NULL,
+    owner TEXT NOT NULL DEFAULT 'local',
     state TEXT NOT NULL DEFAULT 'queued',
     progress INTEGER NOT NULL DEFAULT 0,
     repo_url TEXT NOT NULL DEFAULT '',
@@ -121,6 +186,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sub_agents_run_name ON sub_agents(run_id, 
 CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id INTEGER,
+    owner TEXT NOT NULL DEFAULT 'local',
     level TEXT NOT NULL DEFAULT 'info',
     title TEXT NOT NULL,
     message TEXT NOT NULL DEFAULT '',
@@ -129,14 +195,17 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 
 CREATE TABLE IF NOT EXISTS app_state (
-    key TEXT PRIMARY KEY,
+    key TEXT NOT NULL,
+    owner TEXT NOT NULL DEFAULT 'local',
     value TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (owner, key)
 );
 
 CREATE TABLE IF NOT EXISTS code_review_notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id INTEGER NOT NULL,
+    owner TEXT NOT NULL DEFAULT 'local',
     provider TEXT NOT NULL DEFAULT '',
     source_url TEXT NOT NULL DEFAULT '',
     external_id TEXT NOT NULL DEFAULT '',
@@ -174,7 +243,7 @@ class Database:
             self._ensure_columns(conn)
 
     def _ensure_columns(self, conn: sqlite3.Connection) -> None:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+        runs_columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
         for name, definition in {
             "commit_sha": "TEXT NOT NULL DEFAULT ''",
             "commit_message": "TEXT NOT NULL DEFAULT ''",
@@ -182,9 +251,42 @@ class Database:
             "diff_summary": "TEXT NOT NULL DEFAULT ''",
             "run_report": "TEXT NOT NULL DEFAULT ''",
         }.items():
-            if name not in columns:
+            if name not in runs_columns:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {definition}")
+
+        # Backfill the owner column on databases created before multi-user support.
+        for table in SIMPLE_OWNED_TABLES:
+            columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if "owner" not in columns:
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN owner TEXT NOT NULL DEFAULT '{DEFAULT_OWNER}'"
+                )
+
+        # tickets/app_state need a composite primary key, which means a rebuild
+        # when migrating from the old single-column-PK schema.
+        for table, create_sql in REBUILD_OWNED_TABLES.items():
+            self._rebuild_owner_table(conn, table, create_sql)
+
         conn.commit()
+
+    def _rebuild_owner_table(self, conn: sqlite3.Connection, table: str, create_sql: str) -> None:
+        info = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        columns = {row["name"] for row in info}
+        if "owner" in columns:
+            return  # already on the new schema
+        legacy_cols = [row["name"] for row in info]
+        shared = ", ".join(f'"{col}"' for col in legacy_cols)
+        # Legacy rows may have NULL timestamps; the new schema marks them NOT NULL.
+        select_exprs = ", ".join(
+            f'COALESCE("{col}", CURRENT_TIMESTAMP)' if col.endswith("_at") else f'"{col}"'
+            for col in legacy_cols
+        )
+        conn.execute(f"ALTER TABLE {table} RENAME TO {table}_legacy")
+        conn.executescript(create_sql)
+        conn.execute(
+            f"INSERT INTO {table} ({shared}, owner) SELECT {select_exprs}, '{DEFAULT_OWNER}' FROM {table}_legacy"
+        )
+        conn.execute(f"DROP TABLE {table}_legacy")
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         with self.connect() as conn:
@@ -199,12 +301,69 @@ class Database:
         with self.connect() as conn:
             return conn.execute(sql, params).fetchone()
 
-    def upsert_ticket(self, ticket: dict[str, Any]) -> None:
+    # ----- users & per-user config ---------------------------------------
+
+    def upsert_user(
+        self,
+        username: str,
+        display_name: str = "",
+        password_hash: str | None = None,
+        role: str = "user",
+    ) -> None:
+        existing = self.get_user(username)
+        if existing:
+            self.execute(
+                "UPDATE users SET display_name=?, role=? WHERE username=?",
+                (display_name or existing["display_name"], role or existing["role"], username),
+            )
+            if password_hash is not None:
+                self.execute("UPDATE users SET password_hash=? WHERE username=?", (password_hash, username))
+            return
+        self.execute(
+            "INSERT INTO users(username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+            (username, display_name or username, password_hash or "", role),
+        )
+
+    def get_user(self, username: str) -> sqlite3.Row | None:
+        return self.fetchone("SELECT * FROM users WHERE username=?", (username,))
+
+    def list_users(self) -> list[sqlite3.Row]:
+        return self.fetchall("SELECT * FROM users ORDER BY username")
+
+    def set_user_password(self, username: str, password_hash: str) -> None:
+        self.execute("UPDATE users SET password_hash=? WHERE username=?", (password_hash, username))
+
+    def touch_user_login(self, username: str) -> None:
+        self.execute("UPDATE users SET last_login_at=CURRENT_TIMESTAMP WHERE username=?", (username,))
+
+    def get_user_config(self, username: str) -> dict[str, Any]:
+        row = self.fetchone("SELECT data FROM user_configs WHERE username=?", (username,))
+        if not row or not row["data"]:
+            return {}
+        try:
+            data = json.loads(row["data"])
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def set_user_config(self, username: str, data: dict[str, Any]) -> None:
+        payload = json.dumps(data)
         self.execute(
             """
-            INSERT INTO tickets(key, summary, status, url, description, labels, eligibility, skip_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET
+            INSERT INTO user_configs(username, data) VALUES (?, ?)
+            ON CONFLICT(username) DO UPDATE SET data=excluded.data, updated_at=CURRENT_TIMESTAMP
+            """,
+            (username, payload),
+        )
+
+    # ----- tickets --------------------------------------------------------
+
+    def upsert_ticket(self, ticket: dict[str, Any], owner: str = DEFAULT_OWNER) -> None:
+        self.execute(
+            """
+            INSERT INTO tickets(owner, key, summary, status, url, description, labels, eligibility, skip_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(owner, key) DO UPDATE SET
                 summary=excluded.summary,
                 status=excluded.status,
                 url=excluded.url,
@@ -216,6 +375,7 @@ class Database:
                 updated_at=CURRENT_TIMESTAMP
             """,
             (
+                owner,
                 ticket["key"],
                 ticket["summary"],
                 ticket["status"],
@@ -227,30 +387,38 @@ class Database:
             ),
         )
 
-    def enqueue(self, ticket_key: str, state: str = "needs_plan") -> None:
+    def enqueue(self, ticket_key: str, state: str = "needs_plan", owner: str = DEFAULT_OWNER) -> None:
         existing = self.fetchone(
-            "SELECT id FROM queue_items WHERE ticket_key=? AND state IN ('needs_plan', 'planning', 'plan_ready', 'queued', 'running')",
-            (ticket_key,),
+            """
+            SELECT id FROM queue_items
+            WHERE ticket_key=? AND owner=?
+              AND state IN ('needs_plan', 'planning', 'plan_ready', 'queued', 'running')
+            """,
+            (ticket_key, owner),
         )
         if existing:
             return
-        priority_row = self.fetchone("SELECT COALESCE(MAX(priority), 0) + 1 AS next_priority FROM queue_items")
+        priority_row = self.fetchone(
+            "SELECT COALESCE(MAX(priority), 0) + 1 AS next_priority FROM queue_items WHERE owner=?",
+            (owner,),
+        )
         priority = int(priority_row["next_priority"] if priority_row else 1)
         self.execute(
-            "INSERT INTO queue_items(ticket_key, priority, state) VALUES (?, ?, ?)",
-            (ticket_key, priority, state),
+            "INSERT INTO queue_items(ticket_key, owner, priority, state) VALUES (?, ?, ?, ?)",
+            (ticket_key, owner, priority, state),
         )
 
-    def next_queue_item(self) -> sqlite3.Row | None:
+    def next_queue_item(self, owner: str = DEFAULT_OWNER) -> sqlite3.Row | None:
         return self.fetchone(
             """
             SELECT q.*, t.summary, t.description, t.status, t.url, t.labels
             FROM queue_items q
-            JOIN tickets t ON t.key = q.ticket_key
-            WHERE q.state='queued'
+            JOIN tickets t ON t.key = q.ticket_key AND t.owner = q.owner
+            WHERE q.state='queued' AND q.owner=?
             ORDER BY q.priority ASC, q.id ASC
             LIMIT 1
-            """
+            """,
+            (owner,),
         )
 
     def queue_item(self, queue_id: int) -> sqlite3.Row | None:
@@ -258,15 +426,20 @@ class Database:
             """
             SELECT q.*, t.summary, t.description, t.status, t.url, t.labels
             FROM queue_items q
-            JOIN tickets t ON t.key = q.ticket_key
+            JOIN tickets t ON t.key = q.ticket_key AND t.owner = q.owner
             WHERE q.id=?
             """,
             (queue_id,),
         )
 
-    def create_run(self, ticket_key: str) -> int:
+    # ----- runs -----------------------------------------------------------
+
+    def create_run(self, ticket_key: str, owner: str = DEFAULT_OWNER) -> int:
         with self.connect() as conn:
-            cur = conn.execute("INSERT INTO runs(ticket_key, state) VALUES (?, 'queued')", (ticket_key,))
+            cur = conn.execute(
+                "INSERT INTO runs(ticket_key, owner, state) VALUES (?, ?, 'queued')",
+                (ticket_key, owner),
+            )
             conn.commit()
             return int(cur.lastrowid)
 
@@ -280,6 +453,8 @@ class Database:
     def add_log(self, run_id: int, phase: str, line: str) -> None:
         self.execute("INSERT INTO logs(run_id, phase, line) VALUES (?, ?, ?)", (run_id, phase, line.rstrip()))
 
+    # ----- agent interaction ---------------------------------------------
+
     def create_agent_question(
         self,
         run_id: int,
@@ -287,6 +462,7 @@ class Database:
         options: list[str],
         agent_name: str = "main",
         free_input_enabled: bool = True,
+        owner: str = DEFAULT_OWNER,
     ) -> int:
         padded = (options + ["", "", ""])[:3]
         with self.connect() as conn:
@@ -301,7 +477,7 @@ class Database:
             )
             conn.commit()
             question_id = int(cur.lastrowid)
-        self.add_notification("Agent question waiting", question, "warning", run_id)
+        self.add_notification("Agent question waiting", question, "warning", run_id, owner=owner)
         return question_id
 
     def answer_agent_question(self, question_id: int, answer: str, answer_source: str) -> None:
@@ -355,17 +531,29 @@ class Database:
             (run_id, name, task, status, max(0, min(100, int(progress))), summary),
         )
 
-    def add_notification(self, title: str, message: str = "", level: str = "info", run_id: int | None = None) -> int:
+    # ----- notifications --------------------------------------------------
+
+    def add_notification(
+        self,
+        title: str,
+        message: str = "",
+        level: str = "info",
+        run_id: int | None = None,
+        owner: str = DEFAULT_OWNER,
+    ) -> int:
         with self.connect() as conn:
             cur = conn.execute(
-                "INSERT INTO notifications(run_id, level, title, message) VALUES (?, ?, ?, ?)",
-                (run_id, level, title, message),
+                "INSERT INTO notifications(run_id, owner, level, title, message) VALUES (?, ?, ?, ?, ?)",
+                (run_id, owner, level, title, message),
             )
             conn.commit()
             return int(cur.lastrowid)
 
-    def unread_notifications(self) -> list[sqlite3.Row]:
-        return self.fetchall("SELECT * FROM notifications WHERE read=0 ORDER BY id DESC LIMIT 20")
+    def unread_notifications(self, owner: str = DEFAULT_OWNER) -> list[sqlite3.Row]:
+        return self.fetchall(
+            "SELECT * FROM notifications WHERE read=0 AND owner=? ORDER BY id DESC LIMIT 20",
+            (owner,),
+        )
 
     def mark_notifications_read(self, ids: list[int]) -> None:
         if not ids:
@@ -373,21 +561,23 @@ class Database:
         placeholders = ",".join("?" for _ in ids)
         self.execute(f"UPDATE notifications SET read=1 WHERE id IN ({placeholders})", tuple(ids))
 
-    def get_state(self, key: str, default: str = "") -> str:
-        row = self.fetchone("SELECT value FROM app_state WHERE key=?", (key,))
+    # ----- app state (per owner) -----------------------------------------
+
+    def get_state(self, key: str, default: str = "", owner: str = DEFAULT_OWNER) -> str:
+        row = self.fetchone("SELECT value FROM app_state WHERE key=? AND owner=?", (key, owner))
         return row["value"] if row else default
 
-    def set_state(self, key: str, value: str) -> None:
+    def set_state(self, key: str, value: str, owner: str = DEFAULT_OWNER) -> None:
         self.execute(
             """
-            INSERT INTO app_state(key, value) VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
+            INSERT INTO app_state(key, owner, value) VALUES (?, ?, ?)
+            ON CONFLICT(owner, key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
             """,
-            (key, value),
+            (key, owner, value),
         )
 
-    def queue_paused(self) -> bool:
-        return self.get_state("queue_paused", "0") == "1"
+    def queue_paused(self, owner: str = DEFAULT_OWNER) -> bool:
+        return self.get_state("queue_paused", "0", owner=owner) == "1"
 
     def set_queue_state(self, queue_id: int, state: str) -> None:
         self.execute(
@@ -398,10 +588,15 @@ class Database:
     def delete_queue_item(self, queue_id: int) -> None:
         self.execute("DELETE FROM queue_items WHERE id=? AND state!='running'", (queue_id,))
 
-    def clear_finished_queue_items(self) -> None:
-        self.execute("DELETE FROM queue_items WHERE state IN ('done', 'failed', 'cancelled')")
+    def clear_finished_queue_items(self, owner: str = DEFAULT_OWNER) -> None:
+        self.execute(
+            "DELETE FROM queue_items WHERE owner=? AND state IN ('done', 'failed', 'cancelled')",
+            (owner,),
+        )
 
-    def upsert_ticket_plan(self, plan: dict[str, Any]) -> int:
+    # ----- ticket plans ---------------------------------------------------
+
+    def upsert_ticket_plan(self, plan: dict[str, Any], owner: str = DEFAULT_OWNER) -> int:
         existing = self.fetchone("SELECT id FROM ticket_plans WHERE queue_item_id=?", (plan.get("queue_item_id"),))
         if existing:
             self.execute(
@@ -428,13 +623,14 @@ class Database:
             cur = conn.execute(
                 """
                 INSERT INTO ticket_plans(
-                    ticket_key, queue_item_id, state, repo_url, base_branch, branch_name,
+                    ticket_key, owner, queue_item_id, state, repo_url, base_branch, branch_name,
                     mission, plan_text, user_notes, raw_output
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     plan["ticket_key"],
+                    plan.get("owner", owner),
                     plan.get("queue_item_id"),
                     plan.get("state", "draft"),
                     plan.get("repo_url", ""),
@@ -454,7 +650,7 @@ class Database:
 
     def recover_interrupted_work(self) -> int:
         active_runs = self.fetchall(
-            "SELECT id, ticket_key FROM runs WHERE state IN ('preparing_git','running_claude','reviewing')"
+            "SELECT id, ticket_key, owner FROM runs WHERE state IN ('preparing_git','running_claude','reviewing')"
         )
         for run in active_runs:
             self.execute(
@@ -468,7 +664,13 @@ class Database:
                 """,
                 (int(run["id"]),),
             )
-            self.add_notification("Run recovered as failed", run["ticket_key"], "warning", int(run["id"]))
+            self.add_notification(
+                "Run recovered as failed",
+                run["ticket_key"],
+                "warning",
+                int(run["id"]),
+                owner=run["owner"],
+            )
         self.execute(
             """
             UPDATE queue_items
@@ -478,7 +680,9 @@ class Database:
         )
         return len(active_runs)
 
-    def upsert_code_review_note(self, run_id: int, note: dict[str, Any]) -> int:
+    # ----- code review notes ---------------------------------------------
+
+    def upsert_code_review_note(self, run_id: int, note: dict[str, Any], owner: str = DEFAULT_OWNER) -> int:
         existing = self.fetchone(
             "SELECT id FROM code_review_notes WHERE run_id=? AND external_id=? AND kind=?",
             (run_id, note.get("external_id", ""), note.get("kind", "review")),
@@ -509,11 +713,11 @@ class Database:
             cur = conn.execute(
                 """
                 INSERT INTO code_review_notes(
-                    run_id, provider, source_url, external_id, kind, author, file_path, line, body, html_url
+                    run_id, owner, provider, source_url, external_id, kind, author, file_path, line, body, html_url
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (run_id,) + values,
+                (run_id, owner) + values,
             )
             conn.commit()
             return int(cur.lastrowid)

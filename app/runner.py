@@ -17,7 +17,7 @@ from app.claude_runner import (
     parse_discovery,
     review_prompt,
 )
-from app.config import Config, secret_values
+from app.config import Config, DEFAULT_OWNER, apply_user_sections, secret_values
 from app.code_review import post_review_reply
 from app.db import Database
 from app.git_ops import GitOps
@@ -26,14 +26,26 @@ from app.utils import branch_name, mask_secrets
 
 
 class Worker:
-    def __init__(self, config: Config, db: Database):
+    """Automation engine for a single owner (user).
+
+    Each user gets their own Worker so runs are isolated: per-user lock (one
+    active run per user, many users in parallel), per-user interval task,
+    per-user clone workspace, and a config built from that user's saved settings.
+    """
+
+    def __init__(self, config: Config, db: Database, owner: str = DEFAULT_OWNER):
         self.config = config
         self.db = db
-        self.git = GitOps(config)
+        self.owner = owner
+        self.git = GitOps(config, owner)
         self.lock = asyncio.Lock()
         self.interval_task: asyncio.Task[None] | None = None
         self.claude: ClaudeRunner | None = None
         self.cancel_requested = False
+
+    def _runner(self, run_id: int | None, log) -> ClaudeRunner:
+        suffix = run_id if run_id is not None else "plan"
+        return ClaudeRunner(self.config, log, label_prefix=f"cw_{self.owner}_{suffix}")
 
     async def scan_jira(self) -> int:
         client = JiraClient(self.config.jira)
@@ -41,9 +53,9 @@ class Worker:
         count = 0
         for ticket in tickets:
             classified = classify_ticket(ticket, self.config.jira)
-            self.db.upsert_ticket(classified)
+            self.db.upsert_ticket(classified, owner=self.owner)
             if classified["eligibility"] == "eligible":
-                self.db.enqueue(classified["key"])
+                self.db.enqueue(classified["key"], owner=self.owner)
             count += 1
         return count
 
@@ -52,7 +64,7 @@ class Worker:
             await self.scan_jira()
         except Exception as exc:
             print(f"Jira scan failed: {exc}")
-        if self.db.queue_paused():
+        if self.db.queue_paused(owner=self.owner):
             return
         await self.run_next()
 
@@ -77,12 +89,12 @@ class Worker:
             self.claude.cancel()
 
     async def run_next(self) -> int | None:
-        if self.db.queue_paused():
+        if self.db.queue_paused(owner=self.owner):
             return None
         if self.lock.locked():
             return None
         async with self.lock:
-            item = self.db.next_queue_item()
+            item = self.db.next_queue_item(owner=self.owner)
             if not item:
                 return None
             return await self._run_queue_item(item)
@@ -98,19 +110,19 @@ class Worker:
 
     async def _run_queue_item(self, item: Any) -> int:
         self.db.set_queue_state(int(item["id"]), "running")
-        run_id = self.db.create_run(item["ticket_key"])
+        run_id = self.db.create_run(item["ticket_key"], owner=self.owner)
         try:
             await self._run_ticket(run_id, item)
             self.db.set_queue_state(int(item["id"]), "done")
         except asyncio.CancelledError:
             self.db.update_run(run_id, state="cancelled", error="cancelled", finished_at=datetime.utcnow().isoformat())
-            self.db.add_notification("Run cancelled", item["ticket_key"], "warning", run_id)
+            self.db.add_notification("Run cancelled", item["ticket_key"], "warning", run_id, owner=self.owner)
             self.db.set_queue_state(int(item["id"]), "cancelled")
         except Exception as exc:
             friendly = self._friendly_error(str(exc))
             self._log(run_id, "error", friendly)
             self.db.update_run(run_id, state="failed", error=friendly, finished_at=datetime.utcnow().isoformat())
-            self.db.add_notification("Run failed", f"{item['ticket_key']}: {friendly}", "error", run_id)
+            self.db.add_notification("Run failed", f"{item['ticket_key']}: {friendly}", "error", run_id, owner=self.owner)
             self.db.set_queue_state(int(item["id"]), "failed")
         finally:
             self.cancel_requested = False
@@ -123,7 +135,7 @@ class Worker:
         if item["state"] == "running":
             raise RuntimeError("Cannot revise a running item")
         self.db.set_queue_state(queue_id, "planning")
-        self.claude = ClaudeRunner(self.config, lambda phase, line: print(f"[{phase}] {line}"))
+        self.claude = self._runner(None, lambda phase, line: print(f"[{phase}] {line}"))
         existing = self.db.plan_for_queue_item(queue_id)
         previous = ""
         if existing:
@@ -146,6 +158,7 @@ class Worker:
         plan_id = self.db.upsert_ticket_plan(
             {
                 "ticket_key": item["ticket_key"],
+                "owner": self.owner,
                 "queue_item_id": queue_id,
                 "state": "draft",
                 "repo_url": repo_url,
@@ -155,10 +168,11 @@ class Worker:
                 "plan_text": parsed["plan_text"] or "Claude did not provide a detailed plan.",
                 "user_notes": user_notes,
                 "raw_output": output,
-            }
+            },
+            owner=self.owner,
         )
         self.db.set_queue_state(queue_id, "plan_ready")
-        self.db.add_notification("Plan ready", item["ticket_key"], "info")
+        self.db.add_notification("Plan ready", item["ticket_key"], "info", owner=self.owner)
         return plan_id
 
     async def _run_ticket(self, run_id: int, item: Any) -> None:
@@ -166,7 +180,7 @@ class Worker:
         queue_id = int(ticket["id"])
         plan = self.db.plan_for_queue_item(queue_id)
         self.db.update_run(run_id, state="preparing_git", progress=5)
-        self.claude = ClaudeRunner(self.config, lambda phase, line: self._log(run_id, phase, line))
+        self.claude = self._runner(run_id, lambda phase, line: self._log(run_id, phase, line))
 
         if plan:
             discovery = {
@@ -268,18 +282,18 @@ class Worker:
                 finished_at=datetime.utcnow().isoformat(),
             )
             if needs_fix:
-                self.db.add_notification("Run needs CR fix", ticket["ticket_key"], "warning", run_id)
+                self.db.add_notification("Run needs CR fix", ticket["ticket_key"], "warning", run_id, owner=self.owner)
             else:
-                self.db.add_notification("Run finished", ticket["ticket_key"], "success", run_id)
+                self.db.add_notification("Run finished", ticket["ticket_key"], "success", run_id, owner=self.owner)
 
     async def run_cr_fix(self, run_id: int) -> None:
         run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
-        ticket = self.db.fetchone("SELECT * FROM tickets WHERE key=?", (run["ticket_key"],)) if run else None
+        ticket = self.db.fetchone("SELECT * FROM tickets WHERE key=? AND owner=?", (run["ticket_key"], self.owner)) if run else None
         if not run or not ticket:
             raise RuntimeError("Run or ticket not found")
         if not self.config.claude.allow_cr_fix:
             raise RuntimeError("CR fix is disabled in config")
-        self.claude = ClaudeRunner(self.config, lambda phase, line: self._log(run_id, phase, line))
+        self.claude = self._runner(run_id, lambda phase, line: self._log(run_id, phase, line))
         self.db.update_run(run_id, state="running_claude", progress=94)
         fix_prompt = cr_fix_prompt(dict(ticket), run["review_output"]) + self._consume_agent_inputs(run_id)
         self.db.upsert_sub_agent(run_id, "claude-cr-fix", "Fix review findings", "running", 94)
@@ -314,7 +328,7 @@ class Worker:
             run_report=report,
             finished_at=datetime.utcnow().isoformat(),
         )
-        self.db.add_notification("CR fix finished", run["ticket_key"], "success", run_id)
+        self.db.add_notification("CR fix finished", run["ticket_key"], "success", run_id, owner=self.owner)
 
     def push_run(self, run_id: int) -> str:
         run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
@@ -329,7 +343,7 @@ class Worker:
         output = self.git.push_branch(Path(run["workspace_path"]), run["branch_name"])
         self.db.update_run(run_id, state="pushed", pushed_at=datetime.utcnow().isoformat())
         self._log(run_id, "git", output or "pushed")
-        self.db.add_notification("Branch pushed", run["ticket_key"], "success", run_id)
+        self.db.add_notification("Branch pushed", run["ticket_key"], "success", run_id, owner=self.owner)
         return output
 
     async def run_external_code_review_fix(
@@ -340,7 +354,7 @@ class Worker:
         ci_context: str = "",
     ) -> None:
         run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
-        ticket = self.db.fetchone("SELECT * FROM tickets WHERE key=?", (run["ticket_key"],)) if run else None
+        ticket = self.db.fetchone("SELECT * FROM tickets WHERE key=? AND owner=?", (run["ticket_key"], self.owner)) if run else None
         if not run or not ticket:
             raise RuntimeError("Run or ticket not found")
         notes = self.db.code_review_notes(run_id)
@@ -350,7 +364,7 @@ class Worker:
         repo_path = Path(run["workspace_path"])
         if not repo_path.exists():
             raise RuntimeError("Run workspace does not exist")
-        self.claude = ClaudeRunner(self.config, lambda phase, line: self._log(run_id, phase, line))
+        self.claude = self._runner(run_id, lambda phase, line: self._log(run_id, phase, line))
         self.db.update_run(run_id, state="running_claude", progress=90)
         notes_text = "\n\n".join(
             f"NOTE_ID: {note['id']}\nEXTERNAL_ID: {note['external_id']}\nKIND: {note['kind']}\n"
@@ -398,11 +412,11 @@ responses must be an array of objects:
                 response_url = post_review_reply(note["source_url"], note["external_id"], note["kind"], response)
                 self._log(run_id, "cr", f"Commented on review note #{note['id']}")
             self.db.mark_code_review_note_responded(int(note["id"]), response, response_url)
-        self.db.add_notification("Code review handled", run["ticket_key"], "success", run_id)
+        self.db.add_notification("Code review handled", run["ticket_key"], "success", run_id, owner=self.owner)
 
     async def run_ci_fix(self, run_id: int, ci_context: str, user_notes: str = "") -> None:
         run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
-        ticket = self.db.fetchone("SELECT * FROM tickets WHERE key=?", (run["ticket_key"],)) if run else None
+        ticket = self.db.fetchone("SELECT * FROM tickets WHERE key=? AND owner=?", (run["ticket_key"], self.owner)) if run else None
         if not run or not ticket:
             raise RuntimeError("Run or ticket not found")
         repo_path = Path(run["workspace_path"] or "")
@@ -410,7 +424,7 @@ responses must be an array of objects:
             raise RuntimeError("Run workspace does not exist")
         if not ci_context.strip():
             raise RuntimeError("No CI context available. Scan review first.")
-        self.claude = ClaudeRunner(self.config, lambda phase, line: self._log(run_id, phase, line))
+        self.claude = self._runner(run_id, lambda phase, line: self._log(run_id, phase, line))
         self.db.update_run(run_id, state="running_claude", progress=88)
         prompt = f"""
 You are fixing CI failures for Jira ticket {ticket['key']}.
@@ -438,10 +452,10 @@ Tasks:
         commit_sha = self.git.head_sha(repo_path)
         self._log(run_id, "git", f"Commit created: {commit_sha}")
         self.db.update_run(run_id, commit_sha=commit_sha, commit_message=commit_message, state="done", progress=100)
-        self.db.add_notification("CI fix finished", run["ticket_key"], "success", run_id)
+        self.db.add_notification("CI fix finished", run["ticket_key"], "success", run_id, owner=self.owner)
 
     def rerun_ticket(self, ticket_key: str) -> None:
-        self.db.enqueue(ticket_key)
+        self.db.enqueue(ticket_key, owner=self.owner)
 
     def _log(self, run_id: int, phase: str, line: str) -> None:
         clean = mask_secrets(line, secret_values(self.config))
@@ -556,3 +570,44 @@ Tasks:
         values = [cls._progress_from_line(line) for line in output.splitlines()]
         values = [value for value in values if value is not None]
         return max(values) if values else default
+
+
+class WorkerRegistry:
+    """Holds one Worker per user, each with that user's effective config.
+
+    The effective config = server base config (app/auth/docker) + the user's
+    saved jira/git/claude/ui sections.
+    """
+
+    def __init__(self, base_config: Config, db: Database):
+        self.base_config = base_config
+        self.db = db
+        self._workers: dict[str, Worker] = {}
+
+    def set_base_config(self, base_config: Config) -> None:
+        self.base_config = base_config
+        # Existing workers rebuild lazily on next access via refresh().
+
+    def user_config(self, owner: str) -> Config:
+        return apply_user_sections(self.base_config, self.db.get_user_config(owner))
+
+    def for_user(self, owner: str) -> Worker:
+        worker = self._workers.get(owner)
+        if worker is None:
+            worker = Worker(self.user_config(owner), self.db, owner)
+            self._workers[owner] = worker
+        return worker
+
+    def refresh(self, owner: str) -> Worker:
+        """Rebuild a user's worker config after they save settings.
+
+        Preserves the running interval task so saving settings does not stop a
+        background loop.
+        """
+        worker = self.for_user(owner)
+        worker.config = self.user_config(owner)
+        worker.git = GitOps(worker.config, owner)
+        return worker
+
+    def active_workers(self) -> list[Worker]:
+        return list(self._workers.values())

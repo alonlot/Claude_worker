@@ -15,47 +15,90 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
-from app.config import Config, load_config_data, load_config_text, save_config_text, write_config_data
+from app.auth import LoginPageAuthProvider, User, get_auth_provider
+from app.config import (
+    Config,
+    DEFAULT_OWNER,
+    load_config_data,
+    load_config_text,
+    save_config_text,
+)
 from app.code_review import scan_ci_jobs, scan_review_notes, suggest_review_url
 from app.db import Database
 from app.demo import demo_ci_jobs_for_display
-from app.runner import Worker
+from app.runner import WorkerRegistry
 from app.utils import ensure_child_path
 
 
 templates = Jinja2Templates(directory="app/templates")
 
+# Paths reachable without authentication.
+PUBLIC_PATHS = {"/login", "/logout", "/healthz"}
+
 
 def create_app(config: Config, db: Database) -> FastAPI:
     app = FastAPI(title=config.ui.title)
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
-    worker = Worker(config, db)
-    app.state.worker = worker
+    registry = WorkerRegistry(config, db)
+    provider = get_auth_provider(config, db)
+    app.state.registry = registry
+    app.state.provider = provider
     app.state.config = config
     app.state.db = db
+    app.state.flash = ""
     recovered = db.recover_interrupted_work()
     if recovered:
         app.state.flash = f"Recovered {recovered} interrupted run(s) as failed after restart."
 
-    def do_code_review_scan(run_id: int, source_url: str, auto_cr_on: bool, scan_mode: str) -> str:
+    @app.middleware("http")
+    async def auth_gate(request: Request, call_next):
+        path = request.url.path
+        if path in PUBLIC_PATHS or path.startswith("/static"):
+            return await call_next(request)
+        user = request.app.state.provider.authenticate(request)
+        if user is None:
+            if getattr(request.app.state.provider, "requires_login_page", False):
+                return RedirectResponse("/login", status_code=303)
+            return PlainTextResponse("Unauthorized", status_code=401)
+        request.state.user = user
+        return await call_next(request)
+
+    # SessionMiddleware is added last so it wraps the auth gate: request.session
+    # is populated before the login-page provider reads it.
+    app.add_middleware(SessionMiddleware, secret_key=config.auth.session_secret)
+
+    def current_user(request: Request) -> User:
+        return getattr(request.state, "user", User(DEFAULT_OWNER, DEFAULT_OWNER))
+
+    def owner_of(request: Request) -> str:
+        return current_user(request).username
+
+    def worker_for(request: Request):
+        return registry.for_user(owner_of(request))
+
+    def owned_run(run_id: int, owner: str):
+        return db.fetchone("SELECT * FROM runs WHERE id=? AND owner=?", (run_id, owner))
+
+    def do_code_review_scan(run_id: int, source_url: str, auto_cr_on: bool, scan_mode: str, owner: str) -> str:
         """Returns a flash message. scan_mode is notes, ci, or both."""
         source_url = source_url.strip()
         if not source_url:
             return "Paste a pull request or merge request URL before scanning."
         mode = scan_mode if scan_mode in ("notes", "ci", "both") else "both"
-        db.set_state(f"review_source_url:{run_id}", source_url)
-        db.set_state(f"auto_cr:{run_id}", "1" if auto_cr_on else "0")
+        db.set_state(f"review_source_url:{run_id}", source_url, owner=owner)
+        db.set_state(f"auto_cr:{run_id}", "1" if auto_cr_on else "0", owner=owner)
         try:
             notes: list = []
             ci_jobs: list = []
             if mode in ("notes", "both"):
                 notes = scan_review_notes(source_url)
                 for note in notes:
-                    db.upsert_code_review_note(run_id, note)
+                    db.upsert_code_review_note(run_id, note, owner=owner)
             if mode in ("ci", "both"):
                 ci_jobs = scan_ci_jobs(source_url)
-                db.set_state(f"ci_jobs:{run_id}", json.dumps(ci_jobs))
+                db.set_state(f"ci_jobs:{run_id}", json.dumps(ci_jobs), owner=owner)
             if mode == "notes":
                 flash = f"Scanned {len(notes)} code review note(s)."
             elif mode == "ci":
@@ -63,26 +106,73 @@ def create_app(config: Config, db: Database) -> FastAPI:
             else:
                 flash = f"Scanned {len(notes)} code review note(s) and {len(ci_jobs)} CI job(s)."
             if auto_cr_on and notes and mode in ("notes", "both"):
-                ci_ctx = render_ci_context(parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", "")))
+                ci_ctx = render_ci_context(parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", "", owner=owner)))
                 spawn_tracked_task(
-                    worker.run_external_code_review_fix(run_id, ci_context=ci_ctx),
+                    worker_for_owner(owner).run_external_code_review_fix(run_id, ci_context=ci_ctx),
                     db,
                     title="Auto CR failed",
                     message=f"Auto code-review fix crashed for run #{run_id}.",
                     run_id=run_id,
+                    owner=owner,
                 )
             return flash
         except Exception as exc:
             return f"Scan failed: {exc}"
 
+    def worker_for_owner(owner: str):
+        return registry.for_user(owner)
+
+    # ---------------- auth routes ----------------
+
+    @app.get("/login", response_class=HTMLResponse)
+    async def login_page(request: Request):
+        login_provider = isinstance(request.app.state.provider, LoginPageAuthProvider)
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {
+                "request": request,
+                "title": request.app.state.config.ui.title,
+                "flash": pop_flash(request),
+                "login_provider": login_provider,
+                "provider_name": request.app.state.config.auth.provider,
+            },
+        )
+
+    @app.post("/login")
+    async def login_submit(request: Request, username: str = Form(""), password: str = Form("")):
+        prov = request.app.state.provider
+        if isinstance(prov, LoginPageAuthProvider):
+            user = prov.login(username.strip(), password)
+            if not user:
+                request.app.state.flash = "Invalid username or password."
+                return RedirectResponse("/login", status_code=303)
+            request.session["user"] = user.username
+            return RedirectResponse("/", status_code=303)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/logout")
+    async def logout(request: Request):
+        if "session" in request.scope:
+            request.session.clear()
+        return RedirectResponse("/login", status_code=303)
+
+    @app.get("/healthz")
+    async def healthz():
+        return JSONResponse({"ok": True})
+
+    # ---------------- dashboard ----------------
+
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
-        return templates.TemplateResponse(request, "index.html", context(request, db, request.app.state.config))
+        owner = owner_of(request)
+        ucfg = registry.user_config(owner)
+        return templates.TemplateResponse(request, "index.html", context(request, db, ucfg, owner, registry))
 
     @app.post("/jira/scan")
     async def jira_scan(request: Request):
         try:
-            count = await worker.scan_jira()
+            count = await worker_for(request).scan_jira()
             request.app.state.flash = f"Scanned {count} Jira tickets."
         except Exception as exc:
             request.app.state.flash = f"Jira scan failed: {exc}"
@@ -90,77 +180,93 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     @app.post("/queue/run-once")
     async def run_once(request: Request):
-        if db.queue_paused():
+        owner = owner_of(request)
+        if db.queue_paused(owner=owner):
             request.app.state.flash = "Queue is paused. Resume it before running tickets."
         else:
             ready = db.fetchone(
                 """
                 SELECT id FROM queue_items
-                WHERE state IN ('plan_ready', 'needs_plan', 'queued')
+                WHERE owner=? AND state IN ('plan_ready', 'needs_plan', 'queued')
                 ORDER BY priority ASC, id ASC
                 LIMIT 1
-                """
+                """,
+                (owner,),
             )
             if not ready:
                 request.app.state.flash = "No queued ticket is ready to build."
             else:
                 spawn_tracked_task(
-                    worker.run_queue_item(int(ready["id"])),
+                    worker_for(request).run_queue_item(int(ready["id"])),
                     db,
                     title="Run loop failed",
                     message="Background run-once task crashed. Check logs for details.",
+                    owner=owner,
                 )
                 request.app.state.flash = "Build started."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/queue/start-interval")
     async def start_interval(request: Request):
-        worker.start_interval()
+        worker_for(request).start_interval()
         request.app.state.flash = "Interval runner started."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/queue/stop-interval")
     async def stop_interval(request: Request):
-        worker.stop_interval()
+        worker_for(request).stop_interval()
         request.app.state.flash = "Interval runner stopped."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/queue/pause")
     async def pause_queue(request: Request):
-        db.set_state("queue_paused", "1")
+        db.set_state("queue_paused", "1", owner=owner_of(request))
         request.app.state.flash = "Queue paused. Jira scans can still run."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/queue/resume")
     async def resume_queue(request: Request):
-        db.set_state("queue_paused", "0")
+        db.set_state("queue_paused", "0", owner=owner_of(request))
         request.app.state.flash = "Queue resumed."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/queue/reorder")
-    async def reorder_queue(order: str = Form("")):
+    async def reorder_queue(request: Request, order: str = Form("")):
+        owner = owner_of(request)
         ids = [int(value) for value in order.split(",") if value.strip().isdigit()]
-        db.reorder_queue(ids)
+        owned = {
+            int(row["id"])
+            for row in db.fetchall("SELECT id FROM queue_items WHERE owner=?", (owner,))
+        }
+        db.reorder_queue([item_id for item_id in ids if item_id in owned])
         return RedirectResponse("/", status_code=303)
 
     @app.post("/queue/{queue_id}/prepare")
     async def prepare_queue(queue_id: int, request: Request):
+        if not _owns_queue(db, queue_id, owner_of(request)):
+            request.app.state.flash = "Queue item not found."
+            return RedirectResponse("/", status_code=303)
         spawn_tracked_task(
-            worker.prepare_queue_item(queue_id),
+            worker_for(request).prepare_queue_item(queue_id),
             db,
             title="Plan failed",
             message=f"Claude could not prepare queue item #{queue_id}.",
+            owner=owner_of(request),
         )
         request.app.state.flash = "Claude is preparing the mission plan."
         return RedirectResponse(f"/queue/{queue_id}/plan", status_code=303)
 
     @app.post("/queue/{queue_id}/revise")
     async def revise_plan(queue_id: int, request: Request, user_notes: str = Form("")):
+        if not _owns_queue(db, queue_id, owner_of(request)):
+            request.app.state.flash = "Queue item not found."
+            return RedirectResponse("/", status_code=303)
         spawn_tracked_task(
-            worker.prepare_queue_item(queue_id, user_notes.strip()),
+            worker_for(request).prepare_queue_item(queue_id, user_notes.strip()),
             db,
             title="Plan revision failed",
             message=f"Claude could not revise queue item #{queue_id}.",
+            owner=owner_of(request),
         )
         request.app.state.flash = "Claude is revising the plan."
         return RedirectResponse(f"/queue/{queue_id}/plan", status_code=303)
@@ -168,7 +274,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.get("/queue/{queue_id}/plan", response_class=HTMLResponse)
     async def queue_plan(queue_id: int, request: Request):
         item = db.queue_item(queue_id)
-        if not item:
+        if not item or item["owner"] != owner_of(request):
             request.app.state.flash = "Queue item not found."
             return RedirectResponse("/", status_code=303)
         return templates.TemplateResponse(
@@ -177,6 +283,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             {
                 "request": request,
                 "title": request.app.state.config.ui.title,
+                "user": current_user(request),
                 "flash": pop_flash(request),
                 "item": item,
                 "plan": db.plan_for_queue_item(queue_id),
@@ -186,45 +293,48 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.post("/queue/{queue_id}/build")
     async def build_queue(queue_id: int, request: Request):
         item = db.queue_item(queue_id)
-        if not item:
+        if not item or item["owner"] != owner_of(request):
             request.app.state.flash = "Queue item not found."
             return RedirectResponse("/", status_code=303)
         if item["state"] not in ("needs_plan", "plan_ready", "queued"):
             request.app.state.flash = "This queue item is not ready to build."
             return RedirectResponse("/", status_code=303)
         spawn_tracked_task(
-            worker.run_queue_item(queue_id),
+            worker_for(request).run_queue_item(queue_id),
             db,
             title="Build failed",
             message=f"Build crashed for queue item #{queue_id}.",
+            owner=owner_of(request),
         )
         request.app.state.flash = "Build started."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/queue/{queue_id}/delete")
     async def delete_queue(queue_id: int, request: Request):
-        db.delete_queue_item(queue_id)
-        request.app.state.flash = "Queue item removed."
+        if _owns_queue(db, queue_id, owner_of(request)):
+            db.delete_queue_item(queue_id)
+            request.app.state.flash = "Queue item removed."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/queue/clear-finished")
     async def clear_finished_queue(request: Request):
-        db.clear_finished_queue_items()
+        db.clear_finished_queue_items(owner=owner_of(request))
         request.app.state.flash = "Finished queue items cleared."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/tickets/{ticket_key}/enqueue")
-    async def enqueue_ticket(ticket_key: str):
-        db.enqueue(ticket_key)
+    async def enqueue_ticket(ticket_key: str, request: Request):
+        db.enqueue(ticket_key, owner=owner_of(request))
         return RedirectResponse("/", status_code=303)
 
     @app.post("/tickets/{ticket_key}/rerun")
-    async def rerun_ticket(ticket_key: str):
-        worker.rerun_ticket(ticket_key)
+    async def rerun_ticket(ticket_key: str, request: Request):
+        worker_for(request).rerun_ticket(ticket_key)
         return RedirectResponse("/", status_code=303)
 
     @app.post("/dry-run/enqueue")
     async def enqueue_test_ticket(request: Request):
+        owner = owner_of(request)
         ticket_key = "LOCAL-" + datetime.utcnow().strftime("%Y%m%d%H%M%S")
         db.upsert_ticket(
             {
@@ -239,16 +349,19 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "labels": ["dry-run", "local"],
                 "eligibility": "eligible",
                 "skip_reason": "",
-            }
+            },
+            owner=owner,
         )
-        db.enqueue(ticket_key)
+        db.enqueue(ticket_key, owner=owner)
         request.app.state.flash = f"Created dry-run ticket {ticket_key}."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/runs/{run_id}/cancel")
     async def cancel_run(run_id: int, request: Request):
+        owner = owner_of(request)
         active_run = db.fetchone(
-            "SELECT id FROM runs WHERE state IN ('preparing_git','running_claude','reviewing') ORDER BY id DESC LIMIT 1"
+            "SELECT id FROM runs WHERE owner=? AND state IN ('preparing_git','running_claude','reviewing') ORDER BY id DESC LIMIT 1",
+            (owner,),
         )
         if not active_run:
             request.app.state.flash = "No active run to cancel."
@@ -259,27 +372,33 @@ def create_app(config: Config, db: Database) -> FastAPI:
             request.app.state.flash = f"Cancel ignored: run #{run_id} is not active. Active run is #{active_run_id}."
             return RedirectResponse(f"/runs/{active_run_id}", status_code=303)
 
-        worker.cancel_current()
+        worker_for(request).cancel_current()
         db.update_run(active_run_id, state="cancelled", error="cancel requested")
         request.app.state.flash = f"Cancel requested for run #{active_run_id}."
         return RedirectResponse(f"/runs/{active_run_id}", status_code=303)
 
     @app.post("/runs/{run_id}/review-fix")
     async def review_fix(run_id: int, request: Request):
+        owner = owner_of(request)
+        if not owned_run(run_id, owner):
+            return RedirectResponse("/", status_code=303)
         spawn_tracked_task(
-            worker.run_cr_fix(run_id),
+            worker_for(request).run_cr_fix(run_id),
             db,
             title="CR fix failed",
             message=f"Background CR fix crashed for run #{run_id}.",
             run_id=run_id,
+            owner=owner,
         )
         request.app.state.flash = "CR fix started."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/runs/{run_id}/push")
     async def push_run(run_id: int, request: Request):
+        if not owned_run(run_id, owner_of(request)):
+            return RedirectResponse("/", status_code=303)
         try:
-            worker.push_run(run_id)
+            worker_for(request).push_run(run_id)
             request.app.state.flash = "Branch pushed."
         except Exception as exc:
             request.app.state.flash = f"Push failed: {exc}"
@@ -287,24 +406,25 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     @app.get("/runs/{run_id}/push-preview", response_class=HTMLResponse)
     async def push_preview(run_id: int, request: Request):
-        detail = run_detail_context(request, db, request.app.state.config, run_id)
+        detail = run_detail_context(request, db, request.app.state.config, run_id, owner_of(request))
         if detail["run"] is None:
             return RedirectResponse("/", status_code=303)
         return templates.TemplateResponse(request, "push_preview.html", detail)
 
     @app.get("/runs/{run_id}/code-review", response_class=HTMLResponse)
     async def code_review(run_id: int, request: Request):
-        detail = run_detail_context(request, db, request.app.state.config, run_id)
+        owner = owner_of(request)
+        detail = run_detail_context(request, db, request.app.state.config, run_id, owner)
         if detail["run"] is None:
             return RedirectResponse("/", status_code=303)
         detail["review_notes"] = db.code_review_notes(run_id)
-        detail["auto_cr"] = db.get_state(f"auto_cr:{run_id}", "0") == "1"
-        detail["comment_back_default"] = db.get_state(f"comment_back:{run_id}", "1") == "1"
-        ci_jobs = parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", ""))
+        detail["auto_cr"] = db.get_state(f"auto_cr:{run_id}", "0", owner=owner) == "1"
+        detail["comment_back_default"] = db.get_state(f"comment_back:{run_id}", "1", owner=owner) == "1"
+        ci_jobs = parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", "", owner=owner))
         if not ci_jobs and detail["run"]["ticket_key"] == "DEMO-101":
             ci_jobs = demo_ci_jobs_for_display()
         detail["ci_jobs"] = ci_jobs
-        saved_source_url = db.get_state(f"review_source_url:{run_id}", "")
+        saved_source_url = db.get_state(f"review_source_url:{run_id}", "", owner=owner)
         detail["suggested_review_url"] = saved_source_url or suggest_review_url(
             detail["run"]["repo_url"], detail["run"]["branch_name"]
         )
@@ -320,15 +440,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
         comment_back_state: str = Form(""),
         scan_mode: str = Form("both"),
     ):
+        owner = owner_of(request)
+        if not owned_run(run_id, owner):
+            return RedirectResponse("/", status_code=303)
         auto_cr_on = auto_cr == "on" or auto_cr_state == "1"
         if comment_back_state in {"0", "1"}:
-            db.set_state(f"comment_back:{run_id}", comment_back_state)
-        request.app.state.flash = do_code_review_scan(
-            run_id,
-            source_url,
-            auto_cr_on,
-            scan_mode,
-        )
+            db.set_state(f"comment_back:{run_id}", comment_back_state, owner=owner)
+        request.app.state.flash = do_code_review_scan(run_id, source_url, auto_cr_on, scan_mode, owner)
         return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 
     @app.post("/runs/{run_id}/code-review/scan-notes")
@@ -340,10 +458,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
         auto_cr_state: str = Form(""),
         comment_back_state: str = Form(""),
     ):
+        owner = owner_of(request)
+        if not owned_run(run_id, owner):
+            return RedirectResponse("/", status_code=303)
         auto_cr_on = auto_cr == "on" or auto_cr_state == "1"
         if comment_back_state in {"0", "1"}:
-            db.set_state(f"comment_back:{run_id}", comment_back_state)
-        request.app.state.flash = do_code_review_scan(run_id, source_url, auto_cr_on, "notes")
+            db.set_state(f"comment_back:{run_id}", comment_back_state, owner=owner)
+        request.app.state.flash = do_code_review_scan(run_id, source_url, auto_cr_on, "notes", owner)
         return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 
     @app.post("/runs/{run_id}/code-review/scan-ci")
@@ -354,33 +475,40 @@ def create_app(config: Config, db: Database) -> FastAPI:
         auto_cr_state: str = Form(""),
         comment_back_state: str = Form(""),
     ):
+        owner = owner_of(request)
+        if not owned_run(run_id, owner):
+            return RedirectResponse("/", status_code=303)
         if auto_cr_state in {"0", "1"}:
-            db.set_state(f"auto_cr:{run_id}", auto_cr_state)
+            db.set_state(f"auto_cr:{run_id}", auto_cr_state, owner=owner)
         if comment_back_state in {"0", "1"}:
-            db.set_state(f"comment_back:{run_id}", comment_back_state)
-        request.app.state.flash = do_code_review_scan(run_id, source_url, False, "ci")
+            db.set_state(f"comment_back:{run_id}", comment_back_state, owner=owner)
+        request.app.state.flash = do_code_review_scan(run_id, source_url, False, "ci", owner)
         return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 
     @app.post("/runs/{run_id}/code-review/auto-scan")
-    async def auto_scan_code_review(run_id: int, source_url: str = Form(""), auto_cr: str = Form("0")):
+    async def auto_scan_code_review(run_id: int, request: Request, source_url: str = Form(""), auto_cr: str = Form("0")):
+        owner = owner_of(request)
+        if not owned_run(run_id, owner):
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
         source_url = source_url.strip()
         if not source_url:
             return JSONResponse({"ok": False, "reason": "missing_source"})
         try:
-            db.set_state(f"review_source_url:{run_id}", source_url)
-            db.set_state(f"auto_cr:{run_id}", "1" if auto_cr == "1" else "0")
+            db.set_state(f"review_source_url:{run_id}", source_url, owner=owner)
+            db.set_state(f"auto_cr:{run_id}", "1" if auto_cr == "1" else "0", owner=owner)
             notes = scan_review_notes(source_url)
             for note in notes:
-                db.upsert_code_review_note(run_id, note)
+                db.upsert_code_review_note(run_id, note, owner=owner)
             ci_jobs = scan_ci_jobs(source_url)
-            db.set_state(f"ci_jobs:{run_id}", json.dumps(ci_jobs))
+            db.set_state(f"ci_jobs:{run_id}", json.dumps(ci_jobs), owner=owner)
             if auto_cr == "1" and notes:
                 spawn_tracked_task(
-                    worker.run_external_code_review_fix(run_id, ci_context=render_ci_context(ci_jobs)),
+                    worker_for(request).run_external_code_review_fix(run_id, ci_context=render_ci_context(ci_jobs)),
                     db,
                     title="Auto CR failed",
                     message=f"Auto code-review fix crashed for run #{run_id}.",
                     run_id=run_id,
+                    owner=owner,
                 )
             return JSONResponse({"ok": True, "notes_count": len(notes), "ci_count": len(ci_jobs)})
         except Exception as exc:
@@ -393,43 +521,51 @@ def create_app(config: Config, db: Database) -> FastAPI:
         user_notes: str = Form(""),
         comment_back: str | None = Form(None),
     ):
+        owner = owner_of(request)
+        if not owned_run(run_id, owner):
+            return RedirectResponse("/", status_code=303)
         comment_back_on = comment_back == "on"
-        db.set_state(f"comment_back:{run_id}", "1" if comment_back_on else "0")
+        db.set_state(f"comment_back:{run_id}", "1" if comment_back_on else "0", owner=owner)
         spawn_tracked_task(
-            worker.run_external_code_review_fix(run_id, user_notes.strip(), comment_back_on),
+            worker_for(request).run_external_code_review_fix(run_id, user_notes.strip(), comment_back_on),
             db,
             title="Code review fix failed",
             message=f"Code review fix crashed for run #{run_id}.",
             run_id=run_id,
+            owner=owner,
         )
         request.app.state.flash = "Code review fix started."
         return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 
     @app.post("/runs/{run_id}/code-review/fix-ci")
     async def fix_ci_jobs(run_id: int, request: Request, user_notes: str = Form("")):
-        ci_jobs = parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", ""))
+        owner = owner_of(request)
+        if not owned_run(run_id, owner):
+            return RedirectResponse("/", status_code=303)
+        ci_jobs = parse_ci_jobs(db.get_state(f"ci_jobs:{run_id}", "", owner=owner))
         ci_context = render_ci_context(ci_jobs)
         if not ci_context:
             request.app.state.flash = "No CI jobs available. Scan review first."
             return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
         spawn_tracked_task(
-            worker.run_ci_fix(run_id, ci_context, user_notes.strip()),
+            worker_for(request).run_ci_fix(run_id, ci_context, user_notes.strip()),
             db,
             title="CI fix failed",
             message=f"CI fix crashed for run #{run_id}.",
             run_id=run_id,
+            owner=owner,
         )
         request.app.state.flash = "CI fix started."
         return RedirectResponse(f"/runs/{run_id}/code-review", status_code=303)
 
     @app.get("/runs/{run_id}/summary", response_class=HTMLResponse)
     async def run_summary_partial(run_id: int, request: Request):
-        detail = run_detail_context(request, db, request.app.state.config, run_id)
+        detail = run_detail_context(request, db, request.app.state.config, run_id, owner_of(request))
         return templates.TemplateResponse(request, "_run_summary.html", detail)
 
     @app.get("/notifications/unread")
-    async def unread_notifications():
-        rows = db.unread_notifications()
+    async def unread_notifications(request: Request):
+        rows = db.unread_notifications(owner=owner_of(request))
         db.mark_notifications_read([int(row["id"]) for row in rows])
         return JSONResponse(
             [
@@ -447,13 +583,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     @app.get("/runs/{run_id}", response_class=HTMLResponse)
     async def run_detail(run_id: int, request: Request):
-        detail = run_detail_context(request, db, request.app.state.config, run_id)
+        detail = run_detail_context(request, db, request.app.state.config, run_id, owner_of(request))
         if detail["run"] is None:
             return RedirectResponse("/", status_code=303)
         return templates.TemplateResponse(request, "run_detail.html", detail)
 
     @app.post("/runs/{run_id}/input")
     async def add_run_input(request: Request, run_id: int, message: str = Form(...)):
+        if not owned_run(run_id, owner_of(request)):
+            return RedirectResponse("/", status_code=303)
         clean = message.strip()
         if clean:
             db.add_agent_input(run_id, clean)
@@ -470,6 +608,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
         selected_answer: str = Form(""),
         free_answer: str = Form(""),
     ) -> Response:
+        if not owned_run(run_id, owner_of(request)):
+            return RedirectResponse("/", status_code=303)
         free_answer = free_answer.strip()
         selected_answer = selected_answer.strip()
         answer = free_answer or selected_answer
@@ -482,18 +622,20 @@ def create_app(config: Config, db: Database) -> FastAPI:
         return RedirectResponse(f"/runs/{run_id}", status_code=303)
 
     @app.get("/runs/{run_id}/logs", response_class=PlainTextResponse)
-    async def run_logs(run_id: int):
+    async def run_logs(run_id: int, request: Request):
+        if not owned_run(run_id, owner_of(request)):
+            return PlainTextResponse("", status_code=404)
         rows = db.fetchall("SELECT phase, line FROM logs WHERE run_id=? ORDER BY id", (run_id,))
         return "\n".join(f"[{row['phase']}] {row['line']}" for row in rows)
 
     @app.get("/runs/{run_id}/workspace/files")
-    async def workspace_files(run_id: int):
-        run = db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+    async def workspace_files(run_id: int, request: Request):
+        run = owned_run(run_id, owner_of(request))
         return JSONResponse(list_workspace_files(run))
 
     @app.get("/runs/{run_id}/workspace/file")
-    async def workspace_file(run_id: int, path: str = ""):
-        run = db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+    async def workspace_file(run_id: int, request: Request, path: str = ""):
+        run = owned_run(run_id, owner_of(request))
         try:
             file_path = safe_workspace_file(run, path)
             if file_path.stat().st_size > 1_000_000:
@@ -507,8 +649,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
             return JSONResponse({"error": str(exc)}, status_code=400)
 
     @app.post("/runs/{run_id}/workspace/file")
-    async def save_workspace_file(run_id: int, path: str = Form(""), content: str = Form("")):
-        run = db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+    async def save_workspace_file(run_id: int, request: Request, path: str = Form(""), content: str = Form("")):
+        run = owned_run(run_id, owner_of(request))
         try:
             file_path = safe_workspace_file(run, path)
             file_path.write_text(content, encoding="utf-8", newline="\n")
@@ -519,46 +661,60 @@ def create_app(config: Config, db: Database) -> FastAPI:
 
     @app.get("/partials/status", response_class=HTMLResponse)
     async def status_partial(request: Request):
-        return templates.TemplateResponse(request, "_status.html", context(request, db, request.app.state.config))
+        owner = owner_of(request)
+        ucfg = registry.user_config(owner)
+        return templates.TemplateResponse(request, "_status.html", context(request, db, ucfg, owner, registry))
 
     @app.get("/partials/dashboard", response_class=HTMLResponse)
     async def dashboard_partial(request: Request):
-        return templates.TemplateResponse(request, "_dashboard_live.html", context(request, db, request.app.state.config))
+        owner = owner_of(request)
+        ucfg = registry.user_config(owner)
+        return templates.TemplateResponse(request, "_dashboard_live.html", context(request, db, ucfg, owner, registry))
+
+    # ---------------- settings ----------------
 
     @app.get("/settings", response_class=HTMLResponse)
     async def settings(request: Request):
-        active_config = request.app.state.config
+        owner = owner_of(request)
+        user = current_user(request)
+        ucfg = registry.user_config(owner)
         return templates.TemplateResponse(
             request,
             "settings.html",
             {
                 "request": request,
-                "config": active_config,
-                "config_text": load_config_text(),
-                "title": active_config.ui.title,
+                "config": ucfg,
+                "title": ucfg.ui.title,
                 "flash": pop_flash(request),
-                "claude_args_text": "\n".join(active_config.claude.args),
-                "excluded_statuses_text": "\n".join(active_config.jira.excluded_statuses),
+                "user": user,
+                "is_admin": user.is_admin,
+                "config_text": load_config_text() if user.is_admin else "",
+                "claude_args_text": "\n".join(ucfg.claude.args),
+                "excluded_statuses_text": "\n".join(ucfg.jira.excluded_statuses),
             },
         )
 
     @app.post("/settings/test/{target}")
     async def test_connection(target: str, request: Request):
         try:
-            message = await run_connection_test(target, request.app.state.config)
+            message = await run_connection_test(target, registry.user_config(owner_of(request)))
             request.app.state.flash = message
         except Exception as exc:
             request.app.state.flash = f"{target} test failed: {exc}"
         return RedirectResponse("/settings", status_code=303)
 
     @app.post("/settings")
-    async def save_settings(request: Request, config_text: str = Form(...)):
+    async def save_server_settings(request: Request, config_text: str = Form(...)):
+        # Server-level YAML (app/auth/docker) is admin-only.
+        if not current_user(request).is_admin:
+            request.app.state.flash = "Only an admin can edit server YAML."
+            return RedirectResponse("/settings", status_code=303)
         try:
             new_config = save_config_text(config_text)
             request.app.state.config = new_config
-            worker.config = new_config
-            worker.git.config = new_config
-            request.app.state.flash = "Config saved."
+            registry.set_base_config(new_config)
+            request.app.state.provider = get_auth_provider(new_config, db)
+            request.app.state.flash = "Server config saved."
         except Exception as exc:
             request.app.state.flash = f"Config save failed: {exc}"
         return RedirectResponse("/settings", status_code=303)
@@ -566,45 +722,31 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.post("/settings/visual")
     async def save_visual_settings(
         request: Request,
-        app_host: str = Form(...),
-        app_port: int = Form(...),
-        database_path: str = Form(...),
-        workspace_dir: str = Form(...),
-        interval_seconds: int = Form(...),
-        clone_retention_limit: int = Form(...),
-        jira_url: str = Form(...),
-        jira_email: str = Form(...),
-        jira_token: str = Form(...),
-        jira_jql: str = Form(...),
+        jira_url: str = Form(""),
+        jira_email: str = Form(""),
+        jira_token: str = Form(""),
+        jira_jql: str = Form(""),
         excluded_statuses: str = Form(""),
         required_text: str = Form(""),
-        max_results: int = Form(...),
+        max_results: int = Form(25),
         git_username: str = Form(""),
         git_token: str = Form(""),
-        git_remote_name: str = Form(...),
-        claude_command: str = Form(...),
+        git_remote_name: str = Form("origin"),
+        git_default_repo_url: str = Form(""),
+        git_default_base_branch: str = Form("main"),
+        claude_command: str = Form("claude"),
         claude_args: str = Form(""),
         claude_model: str = Form(""),
         claude_api_key: str = Form(""),
-        claude_timeout_seconds: int = Form(...),
+        claude_timeout_seconds: int = Form(7200),
         allow_cr_fix: str | None = Form(None),
         auto_cr_fix: str | None = Form(None),
-        ui_title: str = Form(...),
+        ui_title: str = Form("Jira Claude Worker"),
     ):
+        owner = owner_of(request)
         try:
-            data = load_config_data()
-            data.setdefault("app", {}).update(
-                {
-                    "host": app_host,
-                    "port": app_port,
-                    "database_path": database_path,
-                    "workspace_dir": workspace_dir,
-                    "interval_seconds": interval_seconds,
-                    "clone_retention_limit": clone_retention_limit,
-                }
-            )
-            data.setdefault("jira", {}).update(
-                {
+            sections = {
+                "jira": {
                     "url": jira_url,
                     "email": jira_email,
                     "token": jira_token,
@@ -612,17 +754,15 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     "excluded_statuses": split_lines(excluded_statuses),
                     "required_text": required_text,
                     "max_results": max_results,
-                }
-            )
-            data.setdefault("git", {}).update(
-                {
+                },
+                "git": {
                     "username": git_username,
                     "token": git_token,
                     "remote_name": git_remote_name,
-                }
-            )
-            data.setdefault("claude", {}).update(
-                {
+                    "default_repo_url": git_default_repo_url,
+                    "default_base_branch": git_default_base_branch,
+                },
+                "claude": {
                     "command": claude_command,
                     "args": split_lines(claude_args),
                     "model": claude_model,
@@ -630,14 +770,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     "timeout_seconds": claude_timeout_seconds,
                     "allow_cr_fix": allow_cr_fix == "on",
                     "auto_cr_fix": auto_cr_fix == "on",
-                }
-            )
-            data.setdefault("ui", {}).update({"title": ui_title})
-            new_config = write_config_data(data)
-            request.app.state.config = new_config
-            worker.config = new_config
-            worker.git.config = new_config
-            request.app.state.flash = "Config saved."
+                },
+                "ui": {"title": ui_title},
+            }
+            db.set_user_config(owner, sections)
+            registry.refresh(owner)
+            request.app.state.flash = "Your config was saved."
         except Exception as exc:
             request.app.state.flash = f"Config save failed: {exc}"
         return RedirectResponse("/settings", status_code=303)
@@ -645,12 +783,20 @@ def create_app(config: Config, db: Database) -> FastAPI:
     return app
 
 
-def context(request: Request, db: Database, config: Config) -> dict:
-    current = db.fetchone("SELECT * FROM runs WHERE state IN ('preparing_git','running_claude','reviewing') ORDER BY id DESC LIMIT 1")
+def _owns_queue(db: Database, queue_id: int, owner: str) -> bool:
+    row = db.fetchone("SELECT owner FROM queue_items WHERE id=?", (queue_id,))
+    return bool(row and row["owner"] == owner)
+
+
+def context(request: Request, db: Database, config: Config, owner: str, registry: WorkerRegistry) -> dict:
+    current = db.fetchone(
+        "SELECT * FROM runs WHERE owner=? AND state IN ('preparing_git','running_claude','reviewing') ORDER BY id DESC LIMIT 1",
+        (owner,),
+    )
     current_ticket = None
     current_logs = []
     if current:
-        current_ticket = db.fetchone("SELECT * FROM tickets WHERE key=?", (current["ticket_key"],))
+        current_ticket = db.fetchone("SELECT * FROM tickets WHERE key=? AND owner=?", (current["ticket_key"], owner))
         current_logs = db.fetchall("SELECT * FROM logs WHERE run_id=? ORDER BY id DESC LIMIT 120", (current["id"],))
         current_logs = list(reversed(current_logs))
     current_questions = []
@@ -662,38 +808,48 @@ def context(request: Request, db: Database, config: Config) -> dict:
         )
         current_sub_agents = db.fetchall("SELECT * FROM sub_agents WHERE run_id=? ORDER BY updated_at DESC", (current["id"],))
     flash = pop_flash(request)
+    worker = registry.for_user(owner)
     return {
         "request": request,
         "title": config.ui.title,
+        "user": getattr(request.state, "user", None),
         "flash": flash,
         "current": current,
         "current_ticket": current_ticket,
         "current_logs": current_logs,
         "current_questions": current_questions,
         "current_sub_agents": current_sub_agents,
-        "queue_paused": db.queue_paused(),
+        "queue_paused": db.queue_paused(owner=owner),
         "queue": db.fetchall(
             """
             SELECT q.*, t.summary, t.status, p.id AS plan_id, p.mission, p.repo_url, p.base_branch, p.branch_name, p.plan_text
-            FROM queue_items q JOIN tickets t ON t.key=q.ticket_key
+            FROM queue_items q JOIN tickets t ON t.key=q.ticket_key AND t.owner=q.owner
             LEFT JOIN ticket_plans p ON p.queue_item_id=q.id
-            WHERE q.state IN ('needs_plan', 'planning', 'plan_ready', 'queued', 'running')
+            WHERE q.owner=? AND q.state IN ('needs_plan', 'planning', 'plan_ready', 'queued', 'running')
             ORDER BY q.priority ASC, q.id ASC
-            """
+            """,
+            (owner,),
         ),
-        "skipped": db.fetchall("SELECT * FROM tickets WHERE eligibility='skipped' ORDER BY updated_at DESC LIMIT 50"),
-        "manual": db.fetchall("SELECT * FROM tickets WHERE eligibility!='eligible' ORDER BY updated_at DESC LIMIT 50"),
+        "skipped": db.fetchall(
+            "SELECT * FROM tickets WHERE owner=? AND eligibility='skipped' ORDER BY updated_at DESC LIMIT 50",
+            (owner,),
+        ),
+        "manual": db.fetchall(
+            "SELECT * FROM tickets WHERE owner=? AND eligibility!='eligible' ORDER BY updated_at DESC LIMIT 50",
+            (owner,),
+        ),
         "done": db.fetchall(
             """
             SELECT r.*, t.summary
-            FROM runs r LEFT JOIN tickets t ON t.key=r.ticket_key
-            WHERE r.state IN ('done','needs_cr_fix','pushed','failed','cancelled')
+            FROM runs r LEFT JOIN tickets t ON t.key=r.ticket_key AND t.owner=r.owner
+            WHERE r.owner=? AND r.state IN ('done','needs_cr_fix','pushed','failed','cancelled')
             ORDER BY r.id DESC LIMIT 50
-            """
+            """,
+            (owner,),
         ),
-        "notifications": db.fetchall("SELECT * FROM notifications ORDER BY id DESC LIMIT 10"),
+        "notifications": db.fetchall("SELECT * FROM notifications WHERE owner=? ORDER BY id DESC LIMIT 10", (owner,)),
         "allow_cr_fix": config.claude.allow_cr_fix,
-        "interval_running": bool(request.app.state.worker.interval_task and not request.app.state.worker.interval_task.done()),
+        "interval_running": bool(worker.interval_task and not worker.interval_task.done()),
         "setup_status": setup_status(config),
     }
 
@@ -732,27 +888,28 @@ def _real_value(value: str, placeholders: list[str]) -> bool:
     return bool(clean) and all(placeholder not in clean for placeholder in placeholders)
 
 
-def run_detail_context(request: Request, db: Database, config: Config, run_id: int) -> dict:
-    run = db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
-    ticket = db.fetchone("SELECT * FROM tickets WHERE key=?", (run["ticket_key"],)) if run else None
+def run_detail_context(request: Request, db: Database, config: Config, run_id: int, owner: str) -> dict:
+    run = db.fetchone("SELECT * FROM runs WHERE id=? AND owner=?", (run_id, owner))
+    ticket = db.fetchone("SELECT * FROM tickets WHERE key=? AND owner=?", (run["ticket_key"], owner)) if run else None
     data = {
         "request": request,
         "title": config.ui.title,
+        "user": getattr(request.state, "user", None),
         "flash": pop_flash(request),
         "run": run,
         "ticket": ticket,
-        "logs": db.fetchall("SELECT * FROM logs WHERE run_id=? ORDER BY id", (run_id,)),
-        "questions": db.fetchall("SELECT * FROM agent_questions WHERE run_id=? ORDER BY id DESC", (run_id,)),
+        "logs": db.fetchall("SELECT * FROM logs WHERE run_id=? ORDER BY id", (run_id,)) if run else [],
+        "questions": db.fetchall("SELECT * FROM agent_questions WHERE run_id=? ORDER BY id DESC", (run_id,)) if run else [],
         "pending_questions": db.fetchall(
             "SELECT * FROM agent_questions WHERE run_id=? AND state='pending' ORDER BY id",
             (run_id,),
-        ),
-        "agent_inputs": db.fetchall("SELECT * FROM agent_inputs WHERE run_id=? ORDER BY id DESC", (run_id,)),
-        "sub_agents": db.fetchall("SELECT * FROM sub_agents WHERE run_id=? ORDER BY updated_at DESC", (run_id,)),
+        ) if run else [],
+        "agent_inputs": db.fetchall("SELECT * FROM agent_inputs WHERE run_id=? ORDER BY id DESC", (run_id,)) if run else [],
+        "sub_agents": db.fetchall("SELECT * FROM sub_agents WHERE run_id=? ORDER BY updated_at DESC", (run_id,)) if run else [],
         "ide_url": build_ide_url(run_id, run),
-        "review_notes": db.code_review_notes(run_id),
+        "review_notes": db.code_review_notes(run_id) if run else [],
         "timeline": run_timeline(db, run_id, run),
-        "log_markers": run_log_markers(db, run_id),
+        "log_markers": run_log_markers(db, run_id) if run else [],
     }
     return data
 
@@ -1040,6 +1197,7 @@ def spawn_tracked_task(
     title: str,
     message: str,
     run_id: int | None = None,
+    owner: str = DEFAULT_OWNER,
 ) -> asyncio.Task[object]:
     task = asyncio.create_task(coro)
 
@@ -1050,7 +1208,7 @@ def spawn_tracked_task(
             return
         except Exception as exc:
             error_message = f"{message} Error: {exc}"
-            db.add_notification(title, error_message, "error", run_id)
+            db.add_notification(title, error_message, "error", run_id, owner=owner)
             print(error_message)
 
     task.add_done_callback(_on_done)

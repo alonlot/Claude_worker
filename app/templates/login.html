@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · {{ title }}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell login-shell">
+    <section class="panel login-panel">
+      <div class="section-title">
+        <h1>{{ title }}</h1>
+        <p>Sign in to continue.</p>
+      </div>
+      {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+      {% if login_provider %}
+      <form method="post" action="/login" class="settings-form">
+        <label>Username <input name="username" autocomplete="username" autofocus></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password"></label>
+        <button>Sign in</button>
+      </form>
+      {% else %}
+      <p>
+        This server authenticates through your organization's single sign-on
+        (provider: <code>{{ provider_name }}</code>). If you are seeing this page,
+        the SSO proxy did not pass an authenticated identity. Open the app through
+        the proxy URL, or ask an administrator to switch the auth provider to
+        <code>login_page</code> in the server settings.
+      </p>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>

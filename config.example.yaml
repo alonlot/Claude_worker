@@ -6,6 +6,34 @@ app:
   interval_seconds: 300
   clone_retention_limit: 8
 
+# Authentication is pluggable (see app/auth.py).
+#   provider: proxy_header  -> trust an SSO/reverse-proxy header (production)
+#   provider: login_page    -> built-in username/password form (`python -m app add-user`)
+auth:
+  provider: proxy_header
+  header: X-Forwarded-User
+  display_name_header: X-Forwarded-Preferred-Username
+  # Fallback user when no proxy header/session is present. Set to "" on a real
+  # server so the proxy must authenticate. Defaults to the local dev user.
+  default_user: local
+  allowed_users: []
+  admin_users: []
+  session_secret: change-me-to-a-long-random-string
+
+# When enabled, each run executes the Claude agent inside a throwaway container
+# (build the image with: docker build -t claude-worker-agent:latest ./docker).
+# Leave disabled for host-subprocess execution (dev / Windows).
+docker:
+  enabled: false
+  image: claude-worker-agent:latest
+  workspace_mount: /workspace
+  network: bridge
+  memory: ""
+  cpus: ""
+  extra_args: []
+
+# Note: jira / git / claude / ui below are DEFAULTS. Each user overrides them on
+# the per-user Settings page; their values are stored under their username.
 jira:
   url: https://your-domain.atlassian.net
   email: you@example.com

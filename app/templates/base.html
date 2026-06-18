@@ -16,6 +16,12 @@
     <nav>
       <a href="/">Dashboard</a>
       <a href="/settings">Settings</a>
+      {% if user %}
+      <span class="nav-user" title="Signed in as {{ user.username }}{% if user.is_admin %} (admin){% endif %}">
+        {{ user.display_name or user.username }}{% if user.is_admin %} ★{% endif %}
+      </span>
+      <form method="post" action="/logout" class="nav-logout"><button class="linklike">Sign out</button></form>
+      {% endif %}
     </nav>
   </header>
   <main class="shell">

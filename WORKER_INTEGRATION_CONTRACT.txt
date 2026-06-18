@@ -237,17 +237,46 @@ The schema is created by:
 
 Tables:
 
+    users            (multi-user)
+    user_configs     (multi-user: per-user jira/git/claude config as JSON)
     tickets
     queue_items
     runs
+    ticket_plans
     logs
     agent_questions
     agent_inputs
     sub_agents
     notifications
     app_state
+    code_review_notes
 
 The website reads these tables directly. Therefore the real worker must keep them compatible.
+
+Multi-user note
+---------------
+The app is multi-tenant. Every user-owned table carries an `owner` column
+(the username): tickets, queue_items, runs, ticket_plans, code_review_notes,
+notifications, and app_state. tickets and app_state use a composite primary key
+(owner, key). Child tables (logs, agent_questions, agent_inputs, sub_agents) are
+reached only through an owned run_id and inherit ownership from their run.
+
+Every Database method that creates or lists owned rows takes an `owner` argument
+(default "local" for single-user/dev). The worker is created per user via
+WorkerRegistry.for_user(owner); each Worker scopes all of its DB writes to its
+owner and clones into <workspace_dir>/<owner>/<ticket_key>.
+
+Authentication is resolved before any route runs (app/auth.py). Routes read
+request.state.user and pass user.username as the owner. Older single-user
+databases are migrated automatically on init() (owner backfilled to "local").
+
+Execution backend
+-----------------
+The Claude agent runs through an ExecutionBackend (app/execution.py):
+SubprocessBackend on the host, or DockerBackend (one `docker run --rm` container
+per invocation) when docker.enabled is true. Git always runs on the host; only
+the agent process is sandboxed. The cloned workspace is bind-mounted into the
+container. Cancellation uses `docker kill <container>` in Docker mode.
 
 
 4. Table: tickets

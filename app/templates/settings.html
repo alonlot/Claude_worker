@@ -3,19 +3,9 @@
 <section class="settings-layout">
   <form method="post" action="/settings/visual" class="panel settings-form">
     <div class="section-title">
-      <h2>Visual Config</h2>
-      <p>Edit the main settings without touching YAML.</p>
+      <h2>My Config</h2>
+      <p>These settings are saved under your username ({{ user.username }}). Each user has their own Jira, Git, and Claude credentials.</p>
     </div>
-
-    <fieldset>
-      <legend>App</legend>
-      <label>Host <input name="app_host" value="{{ config.app.host }}"></label>
-      <label>Port <input name="app_port" type="number" min="1" max="65535" value="{{ config.app.port }}"></label>
-      <label>Database path <input name="database_path" value="{{ config.app.database_path }}"></label>
-      <label>Workspace dir <input name="workspace_dir" value="{{ config.app.workspace_dir }}"></label>
-      <label>Interval seconds <input name="interval_seconds" type="number" min="5" value="{{ config.app.interval_seconds }}"></label>
-      <label>Clone retention limit <input name="clone_retention_limit" type="number" min="0" value="{{ config.app.clone_retention_limit }}"></label>
-    </fieldset>
 
     <fieldset>
       <legend>Jira</legend>
@@ -33,6 +23,8 @@
       <label>Username <input name="git_username" value="{{ config.git.username }}"></label>
       <label>Token <input name="git_token" type="password" value="{{ config.git.token }}"></label>
       <label>Remote name <input name="git_remote_name" value="{{ config.git.remote_name }}"></label>
+      <label>Default repo URL <input name="git_default_repo_url" value="{{ config.git.default_repo_url }}"></label>
+      <label>Default base branch <input name="git_default_base_branch" value="{{ config.git.default_base_branch }}"></label>
     </fieldset>
 
     <fieldset>
@@ -51,14 +43,14 @@
       <label>Title <input name="ui_title" value="{{ config.ui.title }}"></label>
     </fieldset>
 
-    <button>Save visual config</button>
+    <button>Save my config</button>
   </form>
 
   <div class="stack">
   <section class="panel">
     <div class="section-title">
       <h2>Connection Tests</h2>
-      <p>Check the local commands and configured services.</p>
+      <p>Check your configured services with your own credentials.</p>
     </div>
     <div class="actions">
       <form method="post" action="/settings/test/jira"><button>Test Jira</button></form>
@@ -67,16 +59,25 @@
     </div>
   </section>
 
+  {% if is_admin %}
   <section class="panel">
     <div class="section-title">
-      <h2>Raw YAML</h2>
-      <p>Advanced editor for custom or future settings.</p>
+      <h2>Server YAML (admin)</h2>
+      <p>Server-level config: app, auth provider, and Docker execution. Applies to all users.</p>
     </div>
     <form method="post" action="/settings">
       <textarea name="config_text" spellcheck="false">{{ config_text }}</textarea>
-      <button>Save YAML</button>
+      <button>Save server YAML</button>
     </form>
   </section>
+  {% else %}
+  <section class="panel">
+    <div class="section-title">
+      <h2>Server settings</h2>
+      <p>Server-level settings (auth, Docker, host/port) are managed by an administrator.</p>
+    </div>
+  </section>
+  {% endif %}
   </div>
 </section>
 {% endblock %}
