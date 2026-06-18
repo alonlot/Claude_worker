@@ -120,10 +120,20 @@ CREATE TABLE IF NOT EXISTS skills (
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
     visibility TEXT NOT NULL DEFAULT 'private',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS skill_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_categories_owner_name ON skill_categories(owner, name);
 
 CREATE TABLE IF NOT EXISTS skill_likes (
     username TEXT NOT NULL,
@@ -233,6 +243,7 @@ CREATE TABLE IF NOT EXISTS code_review_notes (
     file_path TEXT NOT NULL DEFAULT '',
     line INTEGER NOT NULL DEFAULT 0,
     body TEXT NOT NULL DEFAULT '',
+    diff_hunk TEXT NOT NULL DEFAULT '',
     html_url TEXT NOT NULL DEFAULT '',
     response TEXT NOT NULL DEFAULT '',
     response_url TEXT NOT NULL DEFAULT '',
@@ -276,6 +287,14 @@ class Database:
         plan_columns = {row["name"] for row in conn.execute("PRAGMA table_info(ticket_plans)").fetchall()}
         if "skill_ids" not in plan_columns:
             conn.execute("ALTER TABLE ticket_plans ADD COLUMN skill_ids TEXT NOT NULL DEFAULT ''")
+
+        skill_columns = {row["name"] for row in conn.execute("PRAGMA table_info(skills)").fetchall()}
+        if "category" not in skill_columns:
+            conn.execute("ALTER TABLE skills ADD COLUMN category TEXT NOT NULL DEFAULT ''")
+
+        cr_columns = {row["name"] for row in conn.execute("PRAGMA table_info(code_review_notes)").fetchall()}
+        if "diff_hunk" not in cr_columns:
+            conn.execute("ALTER TABLE code_review_notes ADD COLUMN diff_hunk TEXT NOT NULL DEFAULT ''")
 
         # Backfill the owner column on databases created before multi-user support.
         for table in SIMPLE_OWNED_TABLES:
@@ -719,6 +738,7 @@ class Database:
             note.get("file_path", ""),
             int(note.get("line") or 0),
             note.get("body", ""),
+            note.get("diff_hunk", ""),
             note.get("html_url", ""),
         )
         if existing:
@@ -726,7 +746,7 @@ class Database:
                 """
                 UPDATE code_review_notes
                 SET provider=?, source_url=?, external_id=?, kind=?, author=?, file_path=?,
-                    line=?, body=?, html_url=?, updated_at=CURRENT_TIMESTAMP
+                    line=?, body=?, diff_hunk=?, html_url=?, updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
                 """,
                 values + (existing["id"],),
@@ -736,9 +756,9 @@ class Database:
             cur = conn.execute(
                 """
                 INSERT INTO code_review_notes(
-                    run_id, owner, provider, source_url, external_id, kind, author, file_path, line, body, html_url
+                    run_id, owner, provider, source_url, external_id, kind, author, file_path, line, body, diff_hunk, html_url
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (run_id, owner) + values,
             )
@@ -767,12 +787,16 @@ class Database:
         description: str = "",
         content: str = "",
         visibility: str = "private",
+        category: str = "",
     ) -> int:
         visibility = "public" if visibility == "public" else "private"
+        category = (category or "").strip()
+        if category:
+            self.create_category(owner, category)
         with self.connect() as conn:
             cur = conn.execute(
-                "INSERT INTO skills(owner, name, description, content, visibility) VALUES (?, ?, ?, ?, ?)",
-                (owner, name, description, content, visibility),
+                "INSERT INTO skills(owner, name, description, content, category, visibility) VALUES (?, ?, ?, ?, ?, ?)",
+                (owner, name, description, content, category, visibility),
             )
             conn.commit()
             return int(cur.lastrowid)
@@ -785,18 +809,57 @@ class Database:
         description: str,
         content: str,
         visibility: str,
+        category: str = "",
     ) -> bool:
         visibility = "public" if visibility == "public" else "private"
+        category = (category or "").strip()
         existing = self.fetchone("SELECT owner FROM skills WHERE id=?", (skill_id,))
         if not existing or existing["owner"] != owner:
             return False
+        if category:
+            self.create_category(owner, category)
         self.execute(
             """
-            UPDATE skills SET name=?, description=?, content=?, visibility=?, updated_at=CURRENT_TIMESTAMP
+            UPDATE skills SET name=?, description=?, content=?, category=?, visibility=?, updated_at=CURRENT_TIMESTAMP
             WHERE id=? AND owner=?
             """,
-            (name, description, content, visibility, skill_id, owner),
+            (name, description, content, category, visibility, skill_id, owner),
         )
+        return True
+
+    # ----- skill categories ----------------------------------------------
+
+    def create_category(self, owner: str, name: str) -> int:
+        name = (name or "").strip()
+        if not name:
+            return 0
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO skill_categories(owner, name) VALUES (?, ?)",
+                (owner, name),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT id FROM skill_categories WHERE owner=? AND name=?", (owner, name)
+            ).fetchone()
+            return int(row["id"]) if row else 0
+
+    def list_categories(self, owner: str) -> list[sqlite3.Row]:
+        return self.fetchall(
+            "SELECT * FROM skill_categories WHERE owner=? ORDER BY name", (owner,)
+        )
+
+    def delete_category(self, category_id: int, owner: str) -> bool:
+        row = self.fetchone(
+            "SELECT name FROM skill_categories WHERE id=? AND owner=?", (category_id, owner)
+        )
+        if not row:
+            return False
+        # Detach the category from the owner's skills, then remove it.
+        self.execute(
+            "UPDATE skills SET category='' WHERE owner=? AND category=?", (owner, row["name"])
+        )
+        self.execute("DELETE FROM skill_categories WHERE id=? AND owner=?", (category_id, owner))
         return True
 
     def delete_skill(self, skill_id: int, owner: str) -> bool:

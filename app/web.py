@@ -756,8 +756,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "title": registry.user_config(owner).ui.title,
                 "user": current_user(request),
                 "flash": pop_flash(request),
-                "my_skills": db.list_skills(owner),
-                "public_skills": db.list_public_skills(),
+                "my_groups": group_skills_by_category(db.list_skills(owner)),
+                "market_groups": group_skills_by_category(db.list_public_skills()),
+                "categories": db.list_categories(owner),
                 "liked_skills": db.liked_skills(owner),
                 "liked_ids": liked_ids,
             },
@@ -769,11 +770,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
         name: str = Form(...),
         description: str = Form(""),
         content: str = Form(""),
+        category: str = Form(""),
         visibility: str = Form("private"),
     ):
         owner = owner_of(request)
         if name.strip():
-            db.create_skill(owner, name.strip(), description.strip(), content, visibility)
+            db.create_skill(owner, name.strip(), description.strip(), content, visibility, category.strip())
             request.app.state.flash = f"Skill '{name.strip()}' created."
         return RedirectResponse("/skills", status_code=303)
 
@@ -784,12 +786,29 @@ def create_app(config: Config, db: Database) -> FastAPI:
         name: str = Form(...),
         description: str = Form(""),
         content: str = Form(""),
+        category: str = Form(""),
         visibility: str = Form("private"),
     ):
-        if db.update_skill(skill_id, owner_of(request), name.strip(), description.strip(), content, visibility):
+        if db.update_skill(
+            skill_id, owner_of(request), name.strip(), description.strip(), content, visibility, category.strip()
+        ):
             request.app.state.flash = "Skill updated."
         else:
             request.app.state.flash = "You can only edit your own skills."
+        return RedirectResponse("/skills", status_code=303)
+
+    @app.post("/skills/categories/create")
+    async def create_skill_category(request: Request, name: str = Form(...)):
+        owner = owner_of(request)
+        if name.strip():
+            db.create_category(owner, name.strip())
+            request.app.state.flash = f"Category '{name.strip()}' created."
+        return RedirectResponse("/skills", status_code=303)
+
+    @app.post("/skills/categories/{category_id}/delete")
+    async def delete_skill_category(category_id: int, request: Request):
+        if db.delete_category(category_id, owner_of(request)):
+            request.app.state.flash = "Category removed."
         return RedirectResponse("/skills", status_code=303)
 
     @app.post("/skills/{skill_id}/delete")
@@ -958,6 +977,19 @@ def create_app(config: Config, db: Database) -> FastAPI:
 def _owns_queue(db: Database, queue_id: int, owner: str) -> bool:
     row = db.fetchone("SELECT owner FROM queue_items WHERE id=?", (queue_id,))
     return bool(row and row["owner"] == owner)
+
+
+def group_skills_by_category(skills) -> list[dict]:
+    """Group skill rows by their category label for the skills page.
+
+    Uncategorized skills land in a trailing "Uncategorized" bucket.
+    """
+    groups: dict[str, list] = {}
+    for skill in skills:
+        category = (skill["category"] if "category" in skill.keys() else "") or "Uncategorized"
+        groups.setdefault(category, []).append(skill)
+    ordered = sorted(groups.items(), key=lambda kv: (kv[0] == "Uncategorized", kv[0].lower()))
+    return [{"category": name, "skills": rows} for name, rows in ordered]
 
 
 def context(request: Request, db: Database, config: Config, owner: str, registry: WorkerRegistry) -> dict:

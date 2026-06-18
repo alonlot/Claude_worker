@@ -60,7 +60,7 @@
       {% for skill in liked_skills %}
       <label class="check">
         <input type="checkbox" name="skill_ids" value="{{ skill.id }}" {% if skill.id in selected_skill_ids %}checked{% endif %}>
-        <strong>{{ skill.name }}</strong> — {{ skill.description }}
+        <strong>{{ skill.name }}</strong>{% if skill.category %} <span class="pill">{{ skill.category }}</span>{% endif %} — {{ skill.description }}
       </label>
       {% endfor %}
       <button class="secondary" data-loading-text="Saving...">Attach selected skills</button>

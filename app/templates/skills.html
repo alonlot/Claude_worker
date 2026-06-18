@@ -1,5 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
+{% macro category_field(selected) %}
+<label>Category
+  <input name="category" list="skill-category-options" value="{{ selected or '' }}" placeholder="e.g. Testing, Conventions">
+</label>
+{% endmacro %}
+
+<datalist id="skill-category-options">
+  {% for cat in categories %}<option value="{{ cat.name }}"></option>{% endfor %}
+</datalist>
+
 <section class="grid skills-grid">
   <div class="panel">
     <div class="section-title">
@@ -9,21 +19,45 @@
     <form method="post" action="/skills/create" class="settings-form">
       <label>Name <input name="name" placeholder="How we write tests" required></label>
       <label>Description <input name="description" placeholder="Short summary shown in the marketplace"></label>
+      {{ category_field("") }}
       <label class="wide">Content
         <textarea class="compact message-box" name="content" placeholder="The full guidance the agent should follow."></textarea>
       </label>
       <label class="check"><input type="checkbox" name="visibility" value="public"> Publish to the marketplace</label>
       <button data-loading-text="Saving...">Create skill</button>
     </form>
+
+    <div class="section-title">
+      <h3>Categories</h3>
+      <p>Group your skills. Create a category, then assign skills to it.</p>
+    </div>
+    <form method="post" action="/skills/categories/create" class="row">
+      <input name="name" placeholder="New category name" required>
+      <button class="secondary" data-loading-text="Adding...">Add category</button>
+    </form>
+    <div class="list compact-list">
+      {% for cat in categories %}
+      <article class="ticket-focus-head">
+        <span class="pill">{{ cat.name }}</span>
+        <form method="post" action="/skills/categories/{{ cat.id }}/delete" onsubmit="return confirm('Delete this category? Skills keep their content but become uncategorized.');">
+          <button class="danger small">Remove</button>
+        </form>
+      </article>
+      {% else %}
+      <p class="empty">No categories yet.</p>
+      {% endfor %}
+    </div>
   </div>
 
   <div class="panel">
     <div class="section-title">
       <h2>My Skills</h2>
-      <p>Skills you own. Edit, publish, or remove them.</p>
+      <p>Skills you own, grouped by category. Edit, publish, or remove them.</p>
     </div>
+    {% for group in my_groups %}
+    <h3 class="category-heading">{{ group.category }}</h3>
     <div class="list">
-      {% for skill in my_skills %}
+      {% for skill in group.skills %}
       <article class="skill-card">
         <details>
           <summary>
@@ -33,6 +67,7 @@
           <form method="post" action="/skills/{{ skill.id }}/update" class="settings-form">
             <label>Name <input name="name" value="{{ skill.name }}" required></label>
             <label>Description <input name="description" value="{{ skill.description }}"></label>
+            {{ category_field(skill.category) }}
             <label class="wide">Content <textarea class="compact message-box" name="content">{{ skill.content }}</textarea></label>
             <label class="check"><input type="checkbox" name="visibility" value="public" {% if skill.visibility == "public" %}checked{% endif %}> Public</label>
             <div class="row">
@@ -44,27 +79,30 @@
           </form>
         </details>
       </article>
-      {% else %}
-      <p class="empty">No skills yet. Create one on the left.</p>
       {% endfor %}
     </div>
+    {% else %}
+    <p class="empty">No skills yet. Create one on the left.</p>
+    {% endfor %}
   </div>
 </section>
 
 <section class="panel">
   <div class="section-title">
     <h2>Marketplace</h2>
-    <p>Public skills shared by everyone. Like the ones you want to use; liked skills can be attached to a ticket plan.</p>
+    <p>Public skills shared by everyone, grouped by category. Like the ones you want to use; liked skills can be attached to a ticket plan.</p>
   </div>
+  {% for group in market_groups %}
+  <h3 class="category-heading">{{ group.category }}</h3>
   <div class="list skills-market">
-    {% for skill in public_skills %}
+    {% for skill in group.skills %}
     <article class="skill-card">
       <div class="ticket-focus-head">
         <strong>{{ skill.name }}</strong>
         <span class="pill">♥ {{ skill.like_count }}</span>
       </div>
       <p>{{ skill.description or "No description." }}</p>
-      <small>by {{ skill.owner }}</small>
+      <small>by {{ skill.owner }}{% if skill.category %} · {{ skill.category }}{% endif %}</small>
       <details>
         <summary>View content</summary>
         <pre>{{ skill.content }}</pre>
@@ -77,9 +115,10 @@
         {% endif %}
       </div>
     </article>
-    {% else %}
-    <p class="empty">No public skills yet. Publish one to share it.</p>
     {% endfor %}
   </div>
+  {% else %}
+  <p class="empty">No public skills yet. Publish one to share it.</p>
+  {% endfor %}
 </section>
 {% endblock %}

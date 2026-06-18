@@ -971,6 +971,27 @@ code {
   font-weight: 700;
 }
 .pill.warn { background: #fff3d6; color: var(--warn); }
+.category-heading {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  padding-bottom: 4px;
+}
+button.small { padding: 4px 10px; font-size: 12px; }
+.cr-hunk {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #0d1117;
+  color: #c9d1d9;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre;
+}
 .list { display: grid; gap: 10px; }
 .list small, .empty { color: var(--muted); }
 .dashboard-question-alert {

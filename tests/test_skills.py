@@ -37,6 +37,51 @@ def test_skill_crud_and_likes(tmp_path):
     assert db.get_skill(sid) is None
 
 
+def test_skill_categories_crud_and_assignment(tmp_path):
+    db = _db(tmp_path)
+    cid = db.create_category("alice", "Testing")
+    assert cid > 0
+    # idempotent: same name returns the same category id
+    assert db.create_category("alice", "Testing") == cid
+    assert {row["name"] for row in db.list_categories("alice")} == {"Testing"}
+    # categories are per-owner
+    assert db.list_categories("bob") == []
+
+    # creating a skill with a brand-new category auto-registers the category
+    sid = db.create_skill("alice", "Pytest", "how", "RUN", "private", "Conventions")
+    assert db.get_skill(sid)["category"] == "Conventions"
+    assert {row["name"] for row in db.list_categories("alice")} == {"Testing", "Conventions"}
+
+    # deleting a category detaches it from skills but keeps the skill
+    conventions = next(row for row in db.list_categories("alice") if row["name"] == "Conventions")
+    assert db.delete_category(conventions["id"], "alice") is True
+    assert db.get_skill(sid)["category"] == ""
+    assert db.delete_category(conventions["id"], "bob") is False  # gone / not owner
+
+
+def test_skill_category_web_routes(tmp_path):
+    config = Config()
+    config.app.database_path = str(tmp_path / "worker.sqlite3")
+    db = Database(config.app.database_path)
+    db.init()
+    client = TestClient(create_app(config, db))
+
+    client.post("/skills/categories/create", data={"name": "Security"}, follow_redirects=False)
+    cat = db.fetchone("SELECT id FROM skill_categories WHERE name='Security'")
+    assert cat is not None
+
+    client.post(
+        "/skills/create",
+        data={"name": "Threat model", "description": "", "content": "x", "category": "Security", "visibility": "public"},
+        follow_redirects=False,
+    )
+    page = client.get("/skills")
+    assert "Security" in page.text  # category heading rendered
+
+    client.post(f"/skills/categories/{cat['id']}/delete", follow_redirects=False)
+    assert db.fetchone("SELECT id FROM skill_categories WHERE name='Security'") is None
+
+
 def test_skills_by_ids(tmp_path):
     db = _db(tmp_path)
     a = db.create_skill("u", "A", "", "AA")
