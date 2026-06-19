@@ -994,6 +994,39 @@ button.small { padding: 4px 10px; font-size: 12px; }
 }
 .list { display: grid; gap: 10px; }
 .list small, .empty { color: var(--muted); }
+
+/* Marketplace: compact, multi-column skill cards instead of full-width rows */
+.skills-market {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+.skills-market .skill-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.skills-market .skill-card .ticket-focus-head { gap: 8px; align-items: center; }
+.skills-market .skill-card .ticket-focus-head strong { font-size: 14px; }
+.skills-market .skill-card p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.skills-market .skill-card > small { font-size: 11px; }
+.skills-market .skill-card details summary { font-size: 12px; cursor: pointer; }
+.skills-market .skill-card pre { font-size: 12px; max-height: 180px; overflow: auto; margin: 4px 0 0; }
+.skills-market .skill-card .row { margin-top: auto; }
+.skills-market .skill-card .row button { padding: 5px 12px; font-size: 12px; }
 .dashboard-question-alert {
   border-color: #f0c36d !important;
   background: #fff8e6 !important;
