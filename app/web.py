@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import shutil
 import shlex
 import subprocess
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
@@ -701,6 +703,22 @@ def create_app(config: Config, db: Database) -> FastAPI:
         rows = db.fetchall("SELECT phase, line FROM logs WHERE run_id=? ORDER BY id", (run_id,))
         return "\n".join(f"[{row['phase']}] {row['line']}" for row in rows)
 
+    @app.get("/runs/{run_id}/workspace.zip")
+    async def download_workspace_zip(run_id: int, request: Request):
+        run = owned_run(run_id, owner_of(request))
+        if not run or not run["workspace_path"]:
+            return PlainTextResponse("Workspace not available.", status_code=404)
+        try:
+            data = build_workspace_zip(run)
+        except ValueError as exc:
+            return PlainTextResponse(str(exc), status_code=400)
+        filename = f"{(run['ticket_key'] or 'run').replace('/', '-')}-{run_id}.zip"
+        return Response(
+            content=data,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @app.get("/runs/{run_id}/workspace/files")
     async def workspace_files(run_id: int, request: Request):
         run = owned_run(run_id, owner_of(request))
@@ -1393,6 +1411,30 @@ def list_workspace_files(run) -> list[dict[str, str]]:
         rel = path.relative_to(root).as_posix()
         files.append({"path": rel, "name": path.name})
     return sorted(files, key=lambda item: item["path"].lower())
+
+
+WORKSPACE_ZIP_IGNORED = {".git", "node_modules", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache"}
+
+
+def build_workspace_zip(run, max_bytes: int = 200_000_000) -> bytes:
+    """Zip the run's workspace (skipping VCS/build dirs) for an in-browser download."""
+    root = workspace_root(run)  # raises ValueError when the workspace is gone
+    buffer = io.BytesIO()
+    total = 0
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(root.rglob("*")):
+            if any(part in WORKSPACE_ZIP_IGNORED for part in path.parts):
+                continue
+            if not path.is_file():
+                continue
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+            if total > max_bytes:
+                raise ValueError("Workspace is too large to download (over 200 MB).")
+            archive.write(path, path.relative_to(root).as_posix())
+    return buffer.getvalue()
 
 
 def safe_workspace_file(run, relative_path: str) -> Path:
