@@ -159,6 +159,10 @@ class DockerConfig:
     network: str = "bridge"
     memory: str = ""  # e.g. "2g"; empty means no limit
     cpus: str = ""  # e.g. "2"; empty means no limit
+    # Run the container as the host user (uid:gid) so the agent can write to the
+    # bind-mounted workspace and files stay owned by the worker user. On by
+    # default; only matters on native Linux (no-op on Docker Desktop/Windows).
+    run_as_host_user: bool = True
     # Extra raw flags appended to `docker run` (advanced).
     extra_args: list[str] = field(default_factory=list)
 

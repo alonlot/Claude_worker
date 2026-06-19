@@ -84,6 +84,17 @@ class DockerBackend(ExecutionBackend):
             "--cap-drop",
             "ALL",
         ]
+        # Run as the host user so the agent can write to the bind-mounted
+        # workspace (whose files are owned by the worker user) and so files it
+        # creates stay owned by that user. The image's baked-in user (uid 10001)
+        # would otherwise hit "permission denied" on a native-Linux host.
+        # os.getuid only exists on POSIX; on Docker Desktop/Windows the mount
+        # translates ownership and no --user is needed.
+        if cfg.run_as_host_user and hasattr(os, "getuid"):
+            argv += ["--user", f"{os.getuid()}:{os.getgid()}"]
+            # The host uid has no home dir inside the image, so point the Claude
+            # CLI at a writable HOME for its config/cache.
+            agent_env = {"HOME": "/tmp", **agent_env}
         if cwd:
             host_path = str(Path(cwd).resolve())
             argv += ["-v", f"{host_path}:{cfg.workspace_mount}", "-w", cfg.workspace_mount]
@@ -193,10 +204,12 @@ def _docker_workspace_write_test(docker: DockerConfig) -> tuple[bool, str]:
                 return False, f"Write test could not run: {exc}"
             if not (Path(tmp) / marker).exists():
                 detail = (proc.stderr or proc.stdout).strip()[-300:]
-                return False, (
-                    "Try mounting a workspace the container user can write to, or run the container as the "
-                    f"host user (add '--user' via docker.extra_args). Detail: {detail}"
+                hint = (
+                    "docker.run_as_host_user is off — turn it on so the container runs as your uid."
+                    if not docker.run_as_host_user
+                    else "Even running as the host user the write failed; check the mounted path's permissions."
                 )
+                return False, f"{hint} Detail: {detail}"
     except Exception as exc:  # noqa: BLE001
         return False, f"Write test setup failed: {exc}"
     return True, "ok"

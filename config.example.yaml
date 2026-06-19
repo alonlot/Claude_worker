@@ -24,13 +24,12 @@ auth:
 # (build the image with: docker build -t claude-worker-agent:latest ./docker).
 # Leave disabled for host-subprocess execution (dev / Windows).
 #
-# Two things to know for Docker mode (verify both with "Check Docker run" in
-# Settings -> Connection Tests):
-#   1. The container does NOT inherit your host Claude login. Set claude.api_key
-#      below so the agent can authenticate inside the container.
-#   2. The image runs as a non-root user. If the host workspace clone is owned by
-#      a different uid, the agent cannot edit files. Run the container as the host
-#      user when needed, e.g. extra_args: ["--user", "1000:1000"].
+# One thing to know for Docker mode: the container does NOT inherit your host
+# Claude login, so set claude.api_key below — the agent authenticates with that
+# key inside the container (the worker refuses to start a Docker run without it).
+# File writes are handled automatically: run_as_host_user makes the container run
+# as your worker user so it can edit the bind-mounted workspace. Verify the whole
+# path with "Check Docker run" in Settings -> Connection Tests.
 docker:
   enabled: false
   image: claude-worker-agent:latest
@@ -38,6 +37,7 @@ docker:
   network: bridge
   memory: ""
   cpus: ""
+  run_as_host_user: true   # run container as host uid:gid so the agent can write files
   extra_args: []
 
 # Note: jira / git / claude / ui below are DEFAULTS. Each user overrides them on

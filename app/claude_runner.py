@@ -46,6 +46,14 @@ class ClaudeRunner:
         return env
 
     async def run_prompt(self, phase: str, prompt: str, cwd: str | Path | None = None) -> str:
+        # In Docker mode the container does not inherit the host Claude login, so
+        # the agent can only authenticate via an API key passed in as an env var.
+        # Fail fast with a clear message instead of a cryptic in-container error.
+        if self.config.docker.enabled and not self.config.claude.api_key:
+            raise RuntimeError(
+                "Docker mode is on but claude.api_key is not set. The container cannot use your host "
+                "Claude login; set claude.api_key in Settings so the agent can authenticate."
+            )
         label = f"{self.label_prefix}_{phase}"
         invocation: Invocation = self.backend.build(self.command(), cwd, self._agent_env(), label)
         self._cancel_argv = invocation.cancel_argv
