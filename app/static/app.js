@@ -284,6 +284,17 @@ function initWebIde(root = document) {
   const setMode = (next) => { mode = next; applyMode(); };
   for (const button of modeButtons) button.addEventListener("click", () => setMode(button.dataset.mode));
 
+  // Follow is a toggle button (aria-pressed) rather than a checkbox.
+  const isFollowing = () => !followToggle || followToggle.getAttribute("aria-pressed") === "true";
+  if (followToggle) {
+    const syncFollow = () => followToggle.classList.toggle("on", isFollowing());
+    syncFollow();
+    followToggle.addEventListener("click", () => {
+      followToggle.setAttribute("aria-pressed", isFollowing() ? "false" : "true");
+      syncFollow();
+    });
+  }
+
   // Folders the user has collapsed (empty set => everything expanded). Tracked
   // by folder path so expand/collapse state survives re-renders (file clicks,
   // live follow refreshes).
@@ -416,7 +427,7 @@ function initWebIde(root = document) {
   loadFiles();
 
   const autoRefresh = async () => {
-    if (followToggle && !followToggle.checked) return;
+    if (!isFollowing()) return;
     try {
       const response = await fetch(`/runs/${runId}/workspace/files`, { cache: "no-store" });
       if (!response.ok) return;

@@ -95,4 +95,8 @@ def test_run_detail_renders_offline_ide(tmp_path):
     page = client.get(f"/runs/{run_id}")
     assert page.status_code == 200
     assert 'data-mode="diff"' in page.text
+    # Follow is a toggle button (role=switch / aria-pressed), not a checkbox.
     assert 'id="web-ide-follow"' in page.text
+    assert 'role="switch"' in page.text
+    assert 'aria-pressed="true"' in page.text
+    assert 'type="checkbox" id="web-ide-follow"' not in page.text

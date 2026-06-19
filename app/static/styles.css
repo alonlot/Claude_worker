@@ -691,10 +691,10 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
   border-radius: 6px;
   background: transparent;
   color: #d8e4ff;
-  padding: 7px 8px;
+  padding: 6px 8px;
   text-align: left;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -716,10 +716,10 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 8px;
+  padding: 8px 8px;
   border-radius: 6px;
-  color: #aebfda;
-  font-size: 12px;
+  color: #c4d2ee;
+  font-size: 13.5px;
   font-weight: 700;
   white-space: nowrap;
   user-select: none;
@@ -734,6 +734,34 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
 .web-ide-dir[open] > summary::before { content: "\25BE"; /* triangle down */ }
 .web-ide-dir > summary:hover { background: #1e293b; color: #e2e9f7; }
 .web-ide-dir .web-ide-file { box-sizing: border-box; }
+/* Follow-agent toggle button (on/off) */
+.ide-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #334155;
+  background: #0f172a;
+  color: #9fb0cf;
+  border-radius: 999px;
+  padding: 4px 12px 4px 10px;
+  font-weight: 700;
+}
+.ide-toggle::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #64748b;
+}
+.ide-toggle.on {
+  background: #14321f;
+  border-color: #2ea043;
+  color: #b9f6c8;
+}
+.ide-toggle.on::before {
+  background: #2ea043;
+  box-shadow: 0 0 0 3px rgba(46, 160, 67, 0.25);
+}
 .web-ide-editor {
   display: grid;
   grid-template-rows: auto 1fr auto;
