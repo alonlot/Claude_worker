@@ -995,7 +995,15 @@ button.small { padding: 4px 10px; font-size: 12px; }
 .list { display: grid; gap: 10px; }
 .list small, .empty { color: var(--muted); }
 
-/* Marketplace: compact, multi-column skill cards instead of full-width rows */
+/* Marketplace: search bar + compact, multi-column skill cards */
+.market-search {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 12px;
+  flex-wrap: wrap;
+}
+.market-search #market-search-text { flex: 1 1 240px; }
+.market-search #market-search-category { flex: 0 0 auto; min-width: 170px; }
 .skills-market {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));

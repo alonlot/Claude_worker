@@ -108,6 +108,26 @@ def test_skill_web_routes_and_marketplace(tmp_path):
     assert skill_id not in db.liked_skill_ids("local")
 
 
+def test_marketplace_has_search_and_filter_data(tmp_path):
+    config = Config()
+    config.app.database_path = str(tmp_path / "worker.sqlite3")
+    db = Database(config.app.database_path)
+    db.init()
+    db.create_skill("local", "How we write tests", "Pytest", "RUN", "public", "Testing")
+    client = TestClient(create_app(config, db))
+    page = client.get("/skills")
+    assert page.status_code == 200
+    # Search controls present.
+    assert 'id="market-search-text"' in page.text
+    assert 'id="market-search-category"' in page.text
+    # Category appears as a filter option.
+    assert '<option value="Testing">Testing</option>' in page.text
+    # Cards carry the data used for client-side text + category filtering.
+    assert 'data-category="Testing"' in page.text
+    assert "data-search=" in page.text
+    assert "how we write tests" in page.text  # lowercased into data-search
+
+
 def test_plan_skill_attachment_and_prompt_injection(tmp_path):
     config = Config()
     config.app.database_path = str(tmp_path / "worker.sqlite3")
