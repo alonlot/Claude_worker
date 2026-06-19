@@ -5,7 +5,7 @@ import json
 import shutil
 import shlex
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -738,6 +738,21 @@ def create_app(config: Config, db: Database) -> FastAPI:
             return JSONResponse({"ok": True, "path": path})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
+
+    @app.get("/stats", response_class=HTMLResponse)
+    async def stats_page(request: Request):
+        owner = owner_of(request)
+        return templates.TemplateResponse(
+            request,
+            "stats.html",
+            {
+                "request": request,
+                "title": registry.user_config(owner).ui.title,
+                "user": current_user(request),
+                "flash": pop_flash(request),
+                "stats": run_stats(db, owner),
+            },
+        )
 
     @app.get("/partials/status", response_class=HTMLResponse)
     async def status_partial(request: Request):
@@ -1476,6 +1491,79 @@ def phase_anchor(phase: str) -> str:
     while "--" in clean:
         clean = clean.replace("--", "-")
     return f"log-{clean or 'phase'}"
+
+
+def _parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).replace("T", " ").split(".")[0].split("+")[0].strip()
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def run_stats(db: Database, owner: str) -> dict:
+    """Aggregate run history for the stats dashboard (owner-scoped)."""
+    rows = db.fetchall("SELECT state, created_at, finished_at FROM runs WHERE owner=?", (owner,))
+    by_state: dict[str, int] = {}
+    per_day: dict[str, int] = {}
+    durations: list[float] = []
+    for row in rows:
+        by_state[row["state"]] = by_state.get(row["state"], 0) + 1
+        created = _parse_ts(row["created_at"])
+        if created:
+            key = created.date().isoformat()
+            per_day[key] = per_day.get(key, 0) + 1
+        finished = _parse_ts(row["finished_at"])
+        if created and finished and finished >= created:
+            durations.append((finished - created).total_seconds())
+
+    total = len(rows)
+    success = by_state.get("done", 0) + by_state.get("pushed", 0)
+    failed = by_state.get("failed", 0) + by_state.get("cancelled", 0)
+    avg_seconds = int(sum(durations) / len(durations)) if durations else 0
+
+    today = datetime.utcnow().date()
+    series = []
+    for offset in range(13, -1, -1):
+        day = today - timedelta(days=offset)
+        series.append({"label": day.strftime("%m-%d"), "count": per_day.get(day.isoformat(), 0)})
+    max_count = max([point["count"] for point in series] or [0])
+
+    recent = db.fetchall(
+        """
+        SELECT r.*, t.summary
+        FROM runs r LEFT JOIN tickets t ON t.key = r.ticket_key AND t.owner = r.owner
+        WHERE r.owner=? ORDER BY r.id DESC LIMIT 20
+        """,
+        (owner,),
+    )
+    return {
+        "total": total,
+        "success": success,
+        "failed": failed,
+        "active": total - success - failed,
+        "success_rate": round(100 * success / total) if total else 0,
+        "by_state": sorted(by_state.items(), key=lambda kv: -kv[1]),
+        "avg_duration": _seconds_text(avg_seconds),
+        "completed_count": len(durations),
+        "series": series,
+        "max_count": max_count,
+        "recent": recent,
+    }
+
+
+def _seconds_text(total_seconds: int) -> str:
+    if total_seconds <= 0:
+        return "-"
+    minutes, seconds = divmod(int(total_seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
 
 
 def duration_text(start: str | None, end: str | None) -> str:

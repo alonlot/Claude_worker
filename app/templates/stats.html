@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="section-title">
+    <h2>Run Stats</h2>
+    <p>History and outcomes for your runs.</p>
+  </div>
+
+  <div class="stat-cards">
+    <article class="stat-card"><span class="stat-num">{{ stats.total }}</span><span class="stat-label">Total runs</span></article>
+    <article class="stat-card ok"><span class="stat-num">{{ stats.success_rate }}%</span><span class="stat-label">Success rate</span></article>
+    <article class="stat-card"><span class="stat-num">{{ stats.success }}</span><span class="stat-label">Succeeded</span></article>
+    <article class="stat-card bad"><span class="stat-num">{{ stats.failed }}</span><span class="stat-label">Failed / cancelled</span></article>
+    <article class="stat-card"><span class="stat-num">{{ stats.avg_duration }}</span><span class="stat-label">Avg duration ({{ stats.completed_count }})</span></article>
+  </div>
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <h2>Runs per day (last 14)</h2>
+    <div class="bar-chart">
+      {% for point in stats.series %}
+      <div class="bar-col" title="{{ point.label }}: {{ point.count }}">
+        <div class="bar" style="height: {{ (point.count / stats.max_count * 100) if stats.max_count else 0 }}%"></div>
+        <span class="bar-count">{{ point.count or "" }}</span>
+        <span class="bar-label">{{ point.label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>By state</h2>
+    <div class="list compact-list">
+      {% for state, count in stats.by_state %}
+      <article class="ticket-focus-head">
+        <span class="pill">{{ state }}</span>
+        <strong>{{ count }}</strong>
+      </article>
+      {% else %}
+      <p class="empty">No runs yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Recent runs</h2>
+  <div class="list">
+    {% for run in stats.recent %}
+    <article class="ticket-focus">
+      <div class="ticket-focus-head">
+        <a class="text-link" href="/runs/{{ run.id }}"><strong>#{{ run.id }} {{ run.ticket_key }}</strong></a>
+        <span class="pill">{{ run.state }}</span>
+      </div>
+      <small>{{ run.summary or "" }} · {{ run.branch_name or "no branch" }} · {{ run.created_at }}</small>
+    </article>
+    {% else %}
+    <p class="empty">No runs yet. Build a ticket from the dashboard.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

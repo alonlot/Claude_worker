@@ -971,6 +971,21 @@ code {
   font-weight: 700;
 }
 .pill.warn { background: #fff3d6; color: var(--warn); }
+/* Stats dashboard */
+.stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.stat-card {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+}
+.stat-card .stat-num { font-size: 26px; font-weight: 800; line-height: 1; }
+.stat-card .stat-label { font-size: 12px; color: var(--muted); }
+.stat-card.ok .stat-num { color: #1a7f37; }
+.stat-card.bad .stat-num { color: var(--danger); }
+.bar-chart { display: flex; align-items: flex-end; gap: 6px; height: 180px; padding-top: 8px; }
+.bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+.bar-col .bar { width: 100%; min-height: 2px; background: var(--accent); border-radius: 4px 4px 0 0; }
+.bar-col .bar-count { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.bar-col .bar-label { font-size: 10px; color: var(--muted); margin-top: 2px; }
 .category-heading {
   margin: 14px 0 6px;
   font-size: 13px;
