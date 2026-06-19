@@ -165,3 +165,26 @@ _PROVIDERS = {
 def get_auth_provider(config: Config, db: Database) -> AuthProvider:
     provider_cls = _PROVIDERS.get(config.auth.provider, ProxyHeaderAuthProvider)
     return provider_cls(config, db)
+
+
+def ensure_default_login_user(config: Config, db: Database) -> str:
+    """Seed a default username/password account for the simple login page.
+
+    Only runs when ``auth.provider == "login_page"`` and the users table is
+    empty, so it never overwrites real accounts. Returns the seeded username
+    (or "" if nothing was seeded). The default credentials come from
+    ``auth.default_username`` / ``auth.default_password`` (admin/admin).
+    """
+    if config.auth.provider != "login_page":
+        return ""
+    if db.list_users():
+        return ""
+    username = (config.auth.default_username or "admin").strip()
+    password = config.auth.default_password or "admin"
+    db.upsert_user(
+        username,
+        display_name=username,
+        password_hash=hash_password(password),
+        role="admin",
+    )
+    return username

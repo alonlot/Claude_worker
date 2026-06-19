@@ -15,6 +15,7 @@
       </div>
       {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
       {% if login_provider %}
+      {% if default_hint %}<div class="inline-alert">{{ default_hint }}</div>{% endif %}
       <form method="post" action="/login" class="settings-form">
         <label>Username <input name="username" autocomplete="username" autofocus></label>
         <label>Password <input name="password" type="password" autocomplete="current-password"></label>

@@ -1,6 +1,13 @@
 from fastapi.testclient import TestClient
 
-from app.auth import LoginPageAuthProvider, ProxyHeaderAuthProvider, get_auth_provider, hash_password, verify_password
+from app.auth import (
+    LoginPageAuthProvider,
+    ProxyHeaderAuthProvider,
+    ensure_default_login_user,
+    get_auth_provider,
+    hash_password,
+    verify_password,
+)
 from app.config import Config
 from app.db import Database
 from app.web import create_app
@@ -97,6 +104,37 @@ def test_login_page_flow(tmp_path):
     out = client.post("/logout", follow_redirects=False)
     assert out.status_code == 303
     assert client.get("/", follow_redirects=False).status_code == 303
+
+
+def test_default_login_user_seeded_for_login_page(tmp_path):
+    config, db = _make(tmp_path, provider="login_page", default_username="admin", default_password="admin")
+    # create_app seeds the default account when the users table is empty.
+    client = TestClient(create_app(config, db))
+    assert db.get_user("admin") is not None
+    assert db.get_user("admin")["role"] == "admin"
+
+    # The login page advertises the default credentials on a fresh install.
+    page = client.get("/login")
+    assert "Default login: admin / admin" in page.text
+
+    # Signing in with the seeded default credentials works.
+    ok = client.post("/login", data={"username": "admin", "password": "admin"}, follow_redirects=False)
+    assert ok.status_code == 303
+    assert ok.headers["location"] == "/"
+    assert client.get("/").status_code == 200
+
+
+def test_default_login_user_not_seeded_when_users_exist(tmp_path):
+    config, db = _make(tmp_path, provider="login_page")
+    db.upsert_user("real", password_hash=hash_password("pw"))
+    assert ensure_default_login_user(config, db) == ""
+    assert db.get_user("admin") is None
+
+
+def test_default_login_user_skipped_for_proxy_header(tmp_path):
+    config, db = _make(tmp_path, provider="proxy_header")
+    assert ensure_default_login_user(config, db) == ""
+    assert db.get_user("admin") is None
 
 
 def test_admin_only_server_yaml_visible(tmp_path):

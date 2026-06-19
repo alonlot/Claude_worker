@@ -6,18 +6,22 @@ app:
   interval_seconds: 300
   clone_retention_limit: 8
 
-# Authentication is pluggable (see app/auth.py).
-#   provider: proxy_header  -> trust an SSO/reverse-proxy header (production)
-#   provider: login_page    -> built-in username/password form (`python -m app add-user`)
+# Authentication is pluggable (see app/auth.py). This build defaults to the
+# simple built-in username/password sign in / sign out.
+#   provider: login_page    -> built-in username/password form (this default)
+#   provider: proxy_header  -> trust an SSO/reverse-proxy header instead
 auth:
-  provider: proxy_header
+  provider: login_page
   header: X-Forwarded-User
   display_name_header: X-Forwarded-Preferred-Username
-  # Fallback user when no proxy header/session is present. Set to "" on a real
-  # server so the proxy must authenticate. Defaults to the local dev user.
   default_user: local
   allowed_users: []
   admin_users: []
+  # Simple login: if no users exist yet, a default admin account is seeded with
+  # these credentials on first start. Sign in, then change it or add real users
+  # with `python -m app add-user <name> --admin`.
+  default_username: admin
+  default_password: admin
   session_secret: change-me-to-a-long-random-string
 
 # When enabled, each run executes the Claude agent inside a throwaway container

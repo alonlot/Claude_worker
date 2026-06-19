@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.auth import LoginPageAuthProvider, User, get_auth_provider
+from app.auth import LoginPageAuthProvider, User, ensure_default_login_user, get_auth_provider
 from app.config import (
     Config,
     DEFAULT_OWNER,
@@ -42,6 +42,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
     app = FastAPI(title=config.ui.title)
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
     registry = WorkerRegistry(config, db)
+    # Simple login: seed a default admin/admin account when using the login page
+    # and no users exist yet, so the first sign-in works out of the box.
+    ensure_default_login_user(config, db)
     provider = get_auth_provider(config, db)
     app.state.registry = registry
     app.state.provider = provider
@@ -127,6 +130,12 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request):
         login_provider = isinstance(request.app.state.provider, LoginPageAuthProvider)
+        auth = request.app.state.config.auth
+        default_hint = ""
+        if login_provider and auth.default_username:
+            users = db.list_users()
+            if len(users) == 1 and users[0]["username"] == auth.default_username.strip():
+                default_hint = f"Default login: {auth.default_username} / {auth.default_password}"
         return templates.TemplateResponse(
             request,
             "login.html",
@@ -136,6 +145,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "flash": pop_flash(request),
                 "login_provider": login_provider,
                 "provider_name": request.app.state.config.auth.provider,
+                "default_hint": default_hint,
             },
         )
 

@@ -107,6 +107,11 @@ class AuthConfig:
     admin_users: list[str] = field(default_factory=list)
     # Secret used to sign session cookies. Override in production.
     session_secret: str = "change-me-dev-session-secret"
+    # Simple login: when provider == "login_page" and the users table is empty,
+    # a default account is seeded with these credentials so you can sign in
+    # immediately. Change the password after first login (or seed real users).
+    default_username: str = "admin"
+    default_password: str = "admin"
 
 
 @dataclass
