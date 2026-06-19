@@ -24,6 +24,7 @@ from app.config import Config, DEFAULT_OWNER, apply_user_sections, secret_values
 from app.code_review import create_merge_request, post_review_reply
 from app.db import Database
 from app.git_ops import GitOps
+from app.execution import get_execution_backend
 from app import notify
 from app.jira_client import JiraClient, classify_ticket
 from app.utils import branch_name, mask_secrets
@@ -427,16 +428,19 @@ class Worker:
             self._log(run_id, "test", "Test gate enabled but no command configured; skipping.")
             return True, ""
         timeout = max(30, int(self.config.test_gate.timeout_seconds or 1800))
-        self._log(run_id, "test", f"Running test gate: {command}")
+        # In Docker mode, run the tests inside a throwaway container with the
+        # workspace mounted (same isolation as the agent); otherwise run on host.
+        if self.config.docker.enabled:
+            inv = get_execution_backend(self.config).build(
+                ["sh", "-lc", command], repo_path, {}, f"cw_{self.owner}_{run_id}_testgate"
+            )
+            argv, cwd, where = inv.argv, inv.cwd, "docker"
+        else:
+            argv, cwd, where = shlex.split(command), str(repo_path), "host"
+        self._log(run_id, "test", f"Running test gate ({where}): {command}")
 
         def _run() -> tuple[int, str]:
-            proc = subprocess.run(
-                shlex.split(command),
-                cwd=str(repo_path),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
+            proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout)
             return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
         try:

@@ -74,6 +74,21 @@ class JiraClient:
             resp = await client.post(url, json=payload, auth=(email, token))
             resp.raise_for_status()
 
+    async def get_transitions(self, issue_key: str) -> list[str]:
+        """Available transition target status names for an issue (for validation)."""
+        base, email, token = self._require_auth()
+        url = f"{base}/rest/api/3/issue/{issue_key}/transitions"
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, auth=(email, token))
+            resp.raise_for_status()
+            transitions = resp.json().get("transitions", []) or []
+        names: list[str] = []
+        for t in transitions:
+            name = str((t.get("to") or {}).get("name") or t.get("name") or "").strip()
+            if name and name not in names:
+                names.append(name)
+        return names
+
     async def transition_issue(self, issue_key: str, status_name: str) -> bool:
         """Move an issue to the named status. Returns False if no match exists."""
         target = (status_name or "").strip().lower()

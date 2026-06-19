@@ -27,6 +27,8 @@ from app.config import (
 )
 from app.code_review import scan_ci_jobs, scan_review_notes, suggest_review_url
 from app.db import Database
+from app.jira_client import JiraClient
+from app import notify
 from app.demo import demo_ci_jobs_for_display
 from app.runner import WorkerRegistry
 from app.utils import ensure_child_path
@@ -883,6 +885,57 @@ def create_app(config: Config, db: Database) -> FastAPI:
             request.app.state.flash = message
         except Exception as exc:
             request.app.state.flash = f"{target} test failed: {exc}"
+        return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/test-notify")
+    async def test_notify(request: Request):
+        cfg = registry.user_config(owner_of(request)).notify
+        if not cfg.email_enabled and not cfg.webhook_enabled:
+            request.app.state.flash = "Enable email and/or webhook first, then save."
+            return RedirectResponse("/settings", status_code=303)
+        errors = notify.dispatch(cfg, "Test notification", "This is a test from Claude Worker.", "info")
+        if errors:
+            request.app.state.flash = "Test notification failed: " + "; ".join(errors)
+        else:
+            request.app.state.flash = "Test notification sent."
+        return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/test-writeback")
+    async def test_writeback(request: Request):
+        owner = owner_of(request)
+        cfg = registry.user_config(owner).jira
+        ticket = db.fetchone(
+            "SELECT key FROM tickets WHERE owner=? ORDER BY updated_at DESC LIMIT 1", (owner,)
+        )
+        if not ticket:
+            request.app.state.flash = "No ticket found yet. Scan Jira or add a dry-run ticket first."
+            return RedirectResponse("/settings", status_code=303)
+        try:
+            names = await JiraClient(cfg).get_transitions(ticket["key"])
+        except Exception as exc:
+            request.app.state.flash = f"Jira write-back check failed: {exc}"
+            return RedirectResponse("/settings", status_code=303)
+        target = (cfg.writeback_transition or "").strip()
+        match = "" if not target else (
+            f" Configured transition '{target}' is "
+            + ("valid." if target.lower() in {n.lower() for n in names} else "NOT in this list — fix the name.")
+        )
+        request.app.state.flash = f"Transitions for {ticket['key']}: {', '.join(names) or '(none)'}.{match}"
+        return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/test-gate")
+    async def test_gate_check(request: Request):
+        cfg = registry.user_config(owner_of(request)).test_gate
+        command = (cfg.command or "").strip()
+        if not command:
+            request.app.state.flash = "Set a test command first (e.g. 'pytest -q')."
+            return RedirectResponse("/settings", status_code=303)
+        program = shlex.split(command)[0]
+        found = shutil.which(program)
+        if found:
+            request.app.state.flash = f"Test command looks runnable: '{program}' found at {found}."
+        else:
+            request.app.state.flash = f"'{program}' was not found on PATH (it must exist where runs execute)."
         return RedirectResponse("/settings", status_code=303)
 
     @app.post("/settings")
