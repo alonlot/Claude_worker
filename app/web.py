@@ -354,6 +354,32 @@ def create_app(config: Config, db: Database) -> FastAPI:
         worker_for(request).rerun_ticket(ticket_key)
         return RedirectResponse("/", status_code=303)
 
+    @app.post("/tickets/start")
+    async def start_ticket_now(request: Request, ticket_key: str = Form("")):
+        owner = owner_of(request)
+        worker = worker_for(request)
+        key = ticket_key.strip().upper()
+        if not key:
+            request.app.state.flash = "Enter a Jira ticket key to start a run."
+            return RedirectResponse("/", status_code=303)
+        try:
+            queue_id = await worker.start_ticket(key)
+        except Exception as exc:
+            request.app.state.flash = f"Could not start {key}: {exc}"
+            return RedirectResponse("/", status_code=303)
+        if queue_id:
+            spawn_tracked_task(
+                worker.run_queue_item(queue_id),
+                db,
+                title="Manual run failed",
+                message=f"Manual run for {key} crashed. Check logs for details.",
+                owner=owner,
+            )
+            request.app.state.flash = f"Started run for {key}."
+        else:
+            request.app.state.flash = f"{key} is already queued or running."
+        return RedirectResponse("/", status_code=303)
+
     @app.post("/dry-run/enqueue")
     async def enqueue_test_ticket(request: Request):
         owner = owner_of(request)

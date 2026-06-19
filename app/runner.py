@@ -647,6 +647,56 @@ Tasks:
     def rerun_ticket(self, ticket_key: str) -> None:
         self.db.enqueue(ticket_key, owner=self.owner)
 
+    async def start_ticket(self, ticket_key: str) -> int:
+        """Queue a ticket by key for an on-demand run, bypassing the Jira gate.
+
+        Pulls the ticket from Jira when configured (so the agent has the real
+        summary/description), but never requires it: an unknown key still
+        becomes an eligible placeholder ticket so the run can proceed. Returns
+        the queue item id to build, or 0 if it is already queued/running.
+        """
+        key = (ticket_key or "").strip().upper()
+        if not key:
+            raise RuntimeError("Enter a Jira ticket key to start a run.")
+        existing = self.db.fetchone(
+            "SELECT key FROM tickets WHERE key=? AND owner=?", (key, self.owner)
+        )
+        cfg = self.config.jira
+        if cfg.url and cfg.email and cfg.token:
+            try:
+                fetched = await JiraClient(cfg).get_issue(key)
+                fetched["eligibility"] = "eligible"
+                fetched["skip_reason"] = ""
+                self.db.upsert_ticket(fetched, owner=self.owner)
+                existing = True
+            except Exception as exc:
+                print(f"Could not fetch {key} from Jira (using placeholder): {exc}")
+        if not existing:
+            self.db.upsert_ticket(
+                {
+                    "key": key,
+                    "summary": f"Manual run for {key}",
+                    "status": "Manual",
+                    "url": "",
+                    "description": f"Manually started from the dashboard for {key}.",
+                    "labels": ["manual"],
+                    "eligibility": "eligible",
+                    "skip_reason": "",
+                },
+                owner=self.owner,
+            )
+        self.db.enqueue(key, owner=self.owner)
+        item = self.db.fetchone(
+            """
+            SELECT id FROM queue_items
+            WHERE ticket_key=? AND owner=?
+              AND state IN ('needs_plan', 'plan_ready', 'queued')
+            ORDER BY id DESC LIMIT 1
+            """,
+            (key, self.owner),
+        )
+        return int(item["id"]) if item else 0
+
     def _scp_command(self, source: str) -> list[str]:
         d = self.config.delivery
         if not d.scp_host or not d.scp_path:

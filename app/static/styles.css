@@ -51,6 +51,8 @@ body {
 .shell { max-width: 1380px; margin: 0 auto; padding: 24px; }
 .actions, .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .actions { margin-bottom: 18px; }
+.start-by-key { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+.start-by-key input { width: 200px; }
 .setup-strip {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr)) auto;

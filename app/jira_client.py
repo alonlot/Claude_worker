@@ -48,6 +48,16 @@ class JiraClient:
 
         return [self._normalize_issue(issue) for issue in data.get("issues", [])]
 
+    async def get_issue(self, issue_key: str) -> dict[str, Any]:
+        """Fetch a single issue by key and normalize it like search results."""
+        base, email, token = self._require_auth()
+        url = f"{base}/rest/api/3/issue/{issue_key}"
+        params = {"fields": "summary,status,description,labels,comment"}
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, params=params, auth=(email, token))
+            resp.raise_for_status()
+            return self._normalize_issue(resp.json())
+
     def _require_auth(self) -> tuple[str, str, str]:
         if not self.config.url or not self.config.email or not self.config.token:
             raise RuntimeError("Jira url, email, and token must be configured")
