@@ -544,6 +544,66 @@ Include one object for every NOTE_ID above.
             self.db.mark_code_review_note_responded(int(note["id"]), response, response_url)
         self.db.add_notification("Code review handled", run["ticket_key"], "success", run_id, owner=self.owner)
 
+    async def run_ide_comment_fix(self, run_id: int, user_notes: str = "") -> None:
+        """Apply the user's inline Web IDE comments as a local revision pass."""
+        run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+        ticket = self.db.fetchone("SELECT * FROM tickets WHERE key=? AND owner=?", (run["ticket_key"], self.owner)) if run else None
+        if not run or not ticket:
+            raise RuntimeError("Run or ticket not found")
+        comments = self.db.open_ide_comments(run_id)
+        if not comments:
+            raise RuntimeError("No open IDE comments to apply")
+        repo_path = Path(run["workspace_path"] or "")
+        if not run["workspace_path"] or not repo_path.exists():
+            raise RuntimeError("Run workspace does not exist")
+        self.claude = self._runner(run_id, lambda phase, line: self._log(run_id, phase, line))
+        self.db.update_run(run_id, state="running_claude", progress=90)
+        self.db.upsert_sub_agent(run_id, "claude-ide-comments", "Apply reviewer comments", "running", 90)
+        comment_text = "\n\n".join(
+            f"- {c['file_path']}:{c['line']}: {c['body']}" if c["file_path"] else f"- {c['body']}"
+            for c in comments
+        )
+        branch_diff = self._branch_diff_context(repo_path, run["base_branch"])
+        prompt = f"""
+You are revising the branch for Jira ticket {ticket['key']} based on inline review
+comments the user left in the Web IDE. Do not run git commands; Python owns Git.
+
+Open the referenced files, address each comment, and keep changes focused.
+
+Additional user instructions:
+{user_notes}
+
+Current branch diff (from git):
+{branch_diff}
+
+Reviewer comments (file:line: comment):
+{comment_text}
+"""
+        await self.claude.run_prompt("ide-comments", prompt, cwd=repo_path)
+        self.db.upsert_sub_agent(run_id, "claude-ide-comments", "Apply reviewer comments", "done", 100)
+        changed = self.git.status(repo_path)
+        if changed:
+            commit_message = f"{run['ticket_key']}: Address Web IDE review comments"
+            self._log(run_id, "git", f"Committing IDE comment fixes: {commit_message}")
+            self.git.commit_all(repo_path, commit_message)
+            commit_sha = self.git.head_sha(repo_path)
+            self._log(run_id, "git", f"Commit created: {commit_sha}")
+            self.db.update_run(
+                run_id,
+                changed_files=self.git.changed_files(repo_path),
+                diff_summary=self.git.diff_stat(repo_path),
+                commit_sha=commit_sha,
+                commit_message=commit_message,
+                state="done",
+                progress=100,
+            )
+        else:
+            self.db.update_run(run_id, state="done", progress=100)
+            self._log(run_id, "ide-comments", "No file changes were needed for the comments.")
+        self.db.resolve_ide_comments(run_id)
+        self.db.add_notification("IDE comments applied", run["ticket_key"], "success", run_id, owner=self.owner)
+        self._notify_external("IDE comments applied", f"{run['ticket_key']} updated from your comments", "success", run_id)
+
     async def run_ci_fix(self, run_id: int, ci_context: str, user_notes: str = "") -> None:
         run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
         ticket = self.db.fetchone("SELECT * FROM tickets WHERE key=? AND owner=?", (run["ticket_key"], self.owner)) if run else None

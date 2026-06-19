@@ -772,6 +772,65 @@ def create_app(config: Config, db: Database) -> FastAPI:
             },
         )
 
+    def ide_comments_context(request: Request, run_id: int) -> dict:
+        return {
+            "request": request,
+            "run": owned_run(run_id, owner_of(request)),
+            "run_id": run_id,
+            "comments": db.list_ide_comments(run_id),
+        }
+
+    @app.get("/runs/{run_id}/ide-comments", response_class=HTMLResponse)
+    async def ide_comments_partial(run_id: int, request: Request):
+        if not owned_run(run_id, owner_of(request)):
+            return HTMLResponse("", status_code=404)
+        return templates.TemplateResponse(request, "_ide_comments.html", ide_comments_context(request, run_id))
+
+    @app.post("/runs/{run_id}/ide-comments")
+    async def add_ide_comment(
+        run_id: int,
+        request: Request,
+        file_path: str = Form(""),
+        line: int = Form(0),
+        body: str = Form(""),
+    ):
+        owner = owner_of(request)
+        if not owned_run(run_id, owner):
+            return RedirectResponse("/", status_code=303)
+        if body.strip():
+            db.add_ide_comment(run_id, file_path.strip(), line, body.strip(), owner=owner)
+        if is_htmx(request):
+            return templates.TemplateResponse(request, "_ide_comments.html", ide_comments_context(request, run_id))
+        return RedirectResponse(f"/runs/{run_id}", status_code=303)
+
+    @app.post("/runs/{run_id}/ide-comments/{comment_id}/delete")
+    async def delete_ide_comment(run_id: int, comment_id: int, request: Request):
+        if not owned_run(run_id, owner_of(request)):
+            return RedirectResponse("/", status_code=303)
+        db.delete_ide_comment(comment_id, run_id)
+        if is_htmx(request):
+            return templates.TemplateResponse(request, "_ide_comments.html", ide_comments_context(request, run_id))
+        return RedirectResponse(f"/runs/{run_id}", status_code=303)
+
+    @app.post("/runs/{run_id}/ide-comments/apply")
+    async def apply_ide_comments(run_id: int, request: Request, user_notes: str = Form("")):
+        owner = owner_of(request)
+        if not owned_run(run_id, owner):
+            return RedirectResponse("/", status_code=303)
+        if not db.open_ide_comments(run_id):
+            request.app.state.flash = "Add at least one comment before applying."
+            return RedirectResponse(f"/runs/{run_id}", status_code=303)
+        spawn_tracked_task(
+            worker_for(request).run_ide_comment_fix(run_id, user_notes.strip()),
+            db,
+            title="IDE comment fix failed",
+            message=f"Applying Web IDE comments crashed for run #{run_id}.",
+            run_id=run_id,
+            owner=owner,
+        )
+        request.app.state.flash = "Applying your Web IDE comments with Claude."
+        return RedirectResponse(f"/runs/{run_id}", status_code=303)
+
     @app.get("/partials/status", response_class=HTMLResponse)
     async def status_partial(request: Request):
         owner = owner_of(request)

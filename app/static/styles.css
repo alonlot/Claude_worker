@@ -971,6 +971,15 @@ code {
   font-weight: 700;
 }
 .pill.warn { background: #fff3d6; color: var(--warn); }
+/* Inline Web IDE review comments */
+.ide-comments-panel { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--panel); }
+.ide-comments-panel > summary { cursor: pointer; font-weight: 700; }
+.ide-comments-list { display: grid; gap: 8px; margin: 8px 0; }
+.ide-comment { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: grid; gap: 4px; }
+.ide-comment.resolved { opacity: 0.6; }
+.ide-comment-form { display: grid; gap: 6px; margin-bottom: 10px; }
+.ide-comment-form .row { gap: 6px; }
+
 /* Stats dashboard */
 .stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
 .stat-card {

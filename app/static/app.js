@@ -315,6 +315,12 @@ function initWebIde(root = document) {
     lastLoadedContent = data.content || "";
     editor.value = lastLoadedContent;
     current.textContent = activePath;
+    // Prefill the review-comment file field with the file being viewed.
+    const commentFile = document.querySelector("#ide-comment-file");
+    if (commentFile && !commentFile.dataset.touched) {
+      commentFile.value = activePath;
+      commentFile.addEventListener("input", () => { commentFile.dataset.touched = "1"; }, { once: true });
+    }
     setFiles(currentFiles);
     save.disabled = false;
     setStatus("Ready");

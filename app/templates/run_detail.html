@@ -63,6 +63,12 @@
         </section>
       </div>
     {% endif %}
+
+      <details class="ide-comments-panel" {% if run.state in ["done", "needs_cr_fix", "pushed", "failed"] %}open{% endif %}>
+        <summary>Review comments → re-run</summary>
+        <p class="field-hint">Leave inline notes on the code, then apply them as a focused revision the agent runs in this workspace.</p>
+        {% include "_ide_comments.html" %}
+      </details>
     </section>
 
     {% include "_run_interaction.html" %}

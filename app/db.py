@@ -254,6 +254,18 @@ CREATE TABLE IF NOT EXISTS code_review_notes (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cr_notes_run_external ON code_review_notes(run_id, external_id, kind);
+
+CREATE TABLE IF NOT EXISTS ide_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    owner TEXT NOT NULL DEFAULT 'local',
+    file_path TEXT NOT NULL DEFAULT '',
+    line INTEGER NOT NULL DEFAULT 0,
+    body TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT
+);
 """
 
 
@@ -767,6 +779,36 @@ class Database:
 
     def code_review_notes(self, run_id: int) -> list[sqlite3.Row]:
         return self.fetchall("SELECT * FROM code_review_notes WHERE run_id=? ORDER BY id", (run_id,))
+
+    # ----- IDE review comments -------------------------------------------
+
+    def add_ide_comment(
+        self, run_id: int, file_path: str, line: int, body: str, owner: str = DEFAULT_OWNER
+    ) -> int:
+        with self.connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO ide_comments(run_id, owner, file_path, line, body) VALUES (?, ?, ?, ?, ?)",
+                (run_id, owner, file_path, int(line or 0), body),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def list_ide_comments(self, run_id: int) -> list[sqlite3.Row]:
+        return self.fetchall("SELECT * FROM ide_comments WHERE run_id=? ORDER BY id", (run_id,))
+
+    def open_ide_comments(self, run_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            "SELECT * FROM ide_comments WHERE run_id=? AND state='open' ORDER BY id", (run_id,)
+        )
+
+    def delete_ide_comment(self, comment_id: int, run_id: int) -> None:
+        self.execute("DELETE FROM ide_comments WHERE id=? AND run_id=?", (comment_id, run_id))
+
+    def resolve_ide_comments(self, run_id: int) -> None:
+        self.execute(
+            "UPDATE ide_comments SET state='resolved', resolved_at=CURRENT_TIMESTAMP WHERE run_id=? AND state='open'",
+            (run_id,),
+        )
 
     def mark_code_review_note_responded(self, note_id: int, response: str, response_url: str = "") -> None:
         self.execute(

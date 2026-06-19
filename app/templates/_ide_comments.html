@@ -1,0 +1,44 @@
+<div id="ide-comments">
+  {% set open_count = comments | selectattr('state', 'equalto', 'open') | list | length %}
+  <div class="ide-comments-list">
+    {% for comment in comments %}
+    <article class="ide-comment {{ comment.state }}">
+      <div class="ticket-focus-head">
+        <strong>{{ comment.file_path or "general" }}{% if comment.line %}:{{ comment.line }}{% endif %}</strong>
+        <span class="pill">{{ comment.state }}</span>
+      </div>
+      <span>{{ comment.body }}</span>
+      {% if comment.state == "open" %}
+      <form method="post" action="/runs/{{ run_id }}/ide-comments/{{ comment.id }}/delete"
+            hx-post="/runs/{{ run_id }}/ide-comments/{{ comment.id }}/delete" hx-target="#ide-comments" hx-swap="outerHTML">
+        <button class="danger small" type="submit">Remove</button>
+      </form>
+      {% endif %}
+    </article>
+    {% else %}
+    <p class="empty">No comments yet. Add one below, then apply them as a revision.</p>
+    {% endfor %}
+  </div>
+
+  <form method="post" action="/runs/{{ run_id }}/ide-comments"
+        hx-post="/runs/{{ run_id }}/ide-comments" hx-target="#ide-comments" hx-swap="outerHTML"
+        class="ide-comment-form">
+    <div class="row">
+      <input name="file_path" id="ide-comment-file" placeholder="path/to/file.py (optional)">
+      <input name="line" type="number" min="0" placeholder="line" style="max-width: 90px;">
+    </div>
+    <textarea class="compact message-box" name="body" placeholder="What should the agent change here?" required></textarea>
+    <button class="secondary" type="submit" data-loading-text="Adding...">Add comment</button>
+  </form>
+
+  {% if open_count and run and run.state in ["done", "needs_cr_fix", "pushed", "failed"] %}
+  <form method="post" action="/runs/{{ run_id }}/ide-comments/apply" class="stack">
+    <label>Extra instructions (optional)
+      <textarea class="compact message-box" name="user_notes" placeholder="Anything else for the agent while applying these comments."></textarea>
+    </label>
+    <button data-loading-text="Applying...">Apply {{ open_count }} comment(s) — re-run</button>
+  </form>
+  {% elif open_count %}
+  <p class="form-hint">You can apply comments once the run has finished.</p>
+  {% endif %}
+</div>
