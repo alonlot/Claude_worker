@@ -284,6 +284,59 @@ function initWebIde(root = document) {
   const setMode = (next) => { mode = next; applyMode(); };
   for (const button of modeButtons) button.addEventListener("click", () => setMode(button.dataset.mode));
 
+  // Folders the user has collapsed (empty set => everything expanded). Tracked
+  // by folder path so expand/collapse state survives re-renders (file clicks,
+  // live follow refreshes).
+  const collapsedDirs = new Set();
+
+  const buildTree = (files) => {
+    const root = { dirs: new Map(), files: [], path: "" };
+    for (const file of files) {
+      const parts = file.path.split("/");
+      let node = root;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const dir = parts[i];
+        if (!node.dirs.has(dir)) {
+          node.dirs.set(dir, { dirs: new Map(), files: [], path: parts.slice(0, i + 1).join("/") });
+        }
+        node = node.dirs.get(dir);
+      }
+      node.files.push(file);
+    }
+    return root;
+  };
+
+  const byName = (a, b) => a.toLowerCase().localeCompare(b.toLowerCase());
+
+  const renderNode = (node, container) => {
+    for (const name of [...node.dirs.keys()].sort(byName)) {
+      const dirNode = node.dirs.get(name);
+      const details = document.createElement("details");
+      details.className = "web-ide-dir";
+      if (!collapsedDirs.has(dirNode.path)) details.open = true;
+      const summary = document.createElement("summary");
+      summary.className = "web-ide-dir-name";
+      summary.textContent = name;
+      details.appendChild(summary);
+      details.addEventListener("toggle", () => {
+        if (details.open) collapsedDirs.delete(dirNode.path);
+        else collapsedDirs.add(dirNode.path);
+      });
+      renderNode(dirNode, details);
+      container.appendChild(details);
+    }
+    for (const file of node.files.slice().sort((a, b) => byName(a.name, b.name))) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "web-ide-file";
+      if (file.path === activePath) button.classList.add("active");
+      button.textContent = file.name;
+      button.title = file.path;
+      button.addEventListener("click", () => loadFile(file.path));
+      container.appendChild(button);
+    }
+  };
+
   const setFiles = (files) => {
     currentFiles = files;
     fileList.textContent = "";
@@ -294,15 +347,7 @@ function initWebIde(root = document) {
       fileList.appendChild(empty);
       return;
     }
-    for (const file of files) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "web-ide-file";
-      if (file.path === activePath) button.classList.add("active");
-      button.textContent = file.path;
-      button.addEventListener("click", () => loadFile(file.path));
-      fileList.appendChild(button);
-    }
+    renderNode(buildTree(files), fileList);
   };
 
   const loadFile = async (path) => {

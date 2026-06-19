@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 import shutil
 import shlex
 import subprocess
@@ -1487,22 +1488,17 @@ def list_workspace_files(run) -> list[dict[str, str]]:
         root = workspace_root(run)
     except ValueError:
         return []
-    ignored_dirs = {".git", "node_modules", ".venv", "__pycache__", ".pytest_cache"}
+    ignored_dirs = {".git", "node_modules", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache"}
     files: list[dict[str, str]] = []
-    for path in root.rglob("*"):
-        if len(files) >= 300:
-            break
-        if any(part in ignored_dirs for part in path.parts):
-            continue
-        if not path.is_file():
-            continue
-        try:
-            if path.stat().st_size > 1_000_000:
-                continue
-        except OSError:
-            continue
-        rel = path.relative_to(root).as_posix()
-        files.append({"path": rel, "name": path.name})
+    # No file-count cap: list every file in the repo so the IDE tree is complete.
+    # Build/VCS noise dirs are still skipped (pruned so we don't descend into
+    # them). Large files are listed too; the editor guards size on open.
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in ignored_dirs]
+        for filename in filenames:
+            full = Path(dirpath) / filename
+            rel = full.relative_to(root).as_posix()
+            files.append({"path": rel, "name": filename})
     return sorted(files, key=lambda item: item["path"].lower())
 
 
