@@ -68,3 +68,24 @@ claude:
 
 ui:
   title: Jira Claude Worker
+
+# Outbound notifications (per user) for run events: finished, needs CR fix,
+# failed, or the agent is waiting for an answer. Both channels are optional.
+notify:
+  email_enabled: false
+  smtp_host: ""
+  smtp_port: 587
+  smtp_user: ""
+  smtp_password: ""
+  smtp_use_tls: true
+  email_from: ""
+  email_to: ""             # comma-separated recipients
+  webhook_enabled: false
+  webhook_url: ""          # Slack/Mattermost incoming webhook or any JSON endpoint
+
+# Run the repo's own tests before a run is marked done / pushed. A non-zero exit
+# routes the run to needs_cr_fix (so the failure can be fixed) and blocks push.
+test_gate:
+  enabled: false
+  command: ""              # e.g. "pytest -q" or "npm test" (runs in the workspace)
+  timeout_seconds: 1800

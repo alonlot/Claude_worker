@@ -934,6 +934,16 @@ def create_app(config: Config, db: Database) -> FastAPI:
         scp_path: str = Form(""),
         ssh_key: str = Form(""),
         ssh_port: int = Form(22),
+        notify_email_enabled: str | None = Form(None),
+        notify_smtp_host: str = Form(""),
+        notify_smtp_port: int = Form(587),
+        notify_smtp_user: str = Form(""),
+        notify_smtp_password: str = Form(""),
+        notify_smtp_use_tls: str | None = Form(None),
+        notify_email_from: str = Form(""),
+        notify_email_to: str = Form(""),
+        notify_webhook_enabled: str | None = Form(None),
+        notify_webhook_url: str = Form(""),
     ):
         owner = owner_of(request)
         try:
@@ -975,6 +985,18 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     "scp_path": scp_path,
                     "ssh_key": ssh_key,
                     "ssh_port": ssh_port,
+                },
+                "notify": {
+                    "email_enabled": notify_email_enabled == "on",
+                    "smtp_host": notify_smtp_host,
+                    "smtp_port": notify_smtp_port,
+                    "smtp_user": notify_smtp_user,
+                    "smtp_password": notify_smtp_password,
+                    "smtp_use_tls": notify_smtp_use_tls == "on",
+                    "email_from": notify_email_from,
+                    "email_to": notify_email_to,
+                    "webhook_enabled": notify_webhook_enabled == "on",
+                    "webhook_url": notify_webhook_url,
                 },
             }
             db.set_user_config(owner, sections)

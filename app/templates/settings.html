@@ -54,6 +54,21 @@
     </fieldset>
 
     <fieldset>
+      <legend>Notifications</legend>
+      <p class="field-hint">Get pinged when a run finishes, needs a CR fix, fails, or the agent asks you a question.</p>
+      <label class="check"><input name="notify_email_enabled" type="checkbox" {% if config.notify.email_enabled %}checked{% endif %}> Email via SMTP</label>
+      <label>SMTP host <input name="notify_smtp_host" value="{{ config.notify.smtp_host }}" placeholder="smtp.example.com"></label>
+      <label>SMTP port <input name="notify_smtp_port" type="number" min="1" max="65535" value="{{ config.notify.smtp_port }}"></label>
+      <label>SMTP user <input name="notify_smtp_user" value="{{ config.notify.smtp_user }}"></label>
+      <label>SMTP password <input name="notify_smtp_password" type="password" value="{{ config.notify.smtp_password }}"></label>
+      <label class="check"><input name="notify_smtp_use_tls" type="checkbox" {% if config.notify.smtp_use_tls %}checked{% endif %}> Use STARTTLS</label>
+      <label>From <input name="notify_email_from" value="{{ config.notify.email_from }}" placeholder="worker@example.com"></label>
+      <label>To <input name="notify_email_to" value="{{ config.notify.email_to }}" placeholder="you@example.com, lead@example.com"></label>
+      <label class="check"><input name="notify_webhook_enabled" type="checkbox" {% if config.notify.webhook_enabled %}checked{% endif %}> Webhook (Slack-compatible)</label>
+      <label>Webhook URL <input name="notify_webhook_url" value="{{ config.notify.webhook_url }}" placeholder="https://hooks.slack.com/services/..."></label>
+    </fieldset>
+
+    <fieldset>
       <legend>UI</legend>
       <label>Title <input name="ui_title" value="{{ config.ui.title }}"></label>
     </fieldset>

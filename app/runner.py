@@ -23,6 +23,7 @@ from app.config import Config, DEFAULT_OWNER, apply_user_sections, secret_values
 from app.code_review import create_merge_request, post_review_reply
 from app.db import Database
 from app.git_ops import GitOps
+from app import notify
 from app.jira_client import JiraClient, classify_ticket
 from app.utils import branch_name, mask_secrets
 
@@ -125,6 +126,7 @@ class Worker:
             self._log(run_id, "error", friendly)
             self.db.update_run(run_id, state="failed", error=friendly, finished_at=datetime.utcnow().isoformat())
             self.db.add_notification("Run failed", f"{item['ticket_key']}: {friendly}", "error", run_id, owner=self.owner)
+            self._notify_external("Run failed", f"{item['ticket_key']}: {friendly}", "error", run_id)
             self.db.set_queue_state(int(item["id"]), "failed")
         finally:
             self.cancel_requested = False
@@ -290,11 +292,13 @@ class Worker:
             )
             if needs_fix:
                 self.db.add_notification("Run needs CR fix", ticket["ticket_key"], "warning", run_id, owner=self.owner)
+                self._notify_external("Run needs CR fix", f"{ticket['ticket_key']}: review found issues", "warning", run_id)
             else:
                 self.db.add_notification("Run finished", ticket["ticket_key"], "success", run_id, owner=self.owner)
                 if self.config.git.auto_push:
                     self._auto_publish(run_id, ticket, discovery, branch)
                 await self._jira_writeback(run_id)
+                self._notify_external("Run finished", f"{ticket['ticket_key']} is done on {branch}", "success", run_id)
 
     def _auto_publish(self, run_id: int, ticket: dict[str, Any], discovery: dict[str, str], branch: str) -> None:
         """Push (and optionally open a merge request) for a clean done run."""
@@ -573,6 +577,18 @@ Tasks:
         if progress is not None:
             self.db.update_run(run_id, progress=progress)
 
+    def _notify_external(self, title: str, message: str, level: str = "info", run_id: int | None = None) -> None:
+        """Send outbound email/webhook for a run event (best-effort, never raises)."""
+        try:
+            errors = notify.dispatch(self.config.notify, title, message, level)
+        except Exception as exc:  # noqa: BLE001 - notifications must not break runs
+            errors = [str(exc)]
+        for error in errors:
+            if run_id is not None:
+                self._log(run_id, "notify", f"Notification failed: {error}")
+            else:
+                print(f"Notification failed: {error}")
+
     def _raise_if_cancelled(self) -> None:
         if self.cancel_requested:
             raise asyncio.CancelledError()
@@ -586,6 +602,7 @@ Tasks:
         question_id = self.db.create_agent_question(
             run_id, question, options, agent_name=agent_name, owner=self.owner
         )
+        self._notify_external("Agent is waiting for you", question, "warning", run_id)
         self._log(run_id, "ask", f"Waiting for the user to answer: {question}")
         while True:
             self._raise_if_cancelled()
