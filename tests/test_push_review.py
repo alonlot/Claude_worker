@@ -66,3 +66,38 @@ def test_push_preview_renders_full_diff(tmp_path):
     assert "Full Diff" in page.text
     assert "two" in page.text
     assert "diff-add" in page.text
+    # The merge-request tab embeds the Web IDE wired to diff against the base.
+    assert 'data-diff-base="main"' in page.text
+    assert 'data-default-mode="diff"' in page.text
+
+
+def test_workspace_file_diffs_against_base_branch(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-b", "main"], repo)
+    _git(["config", "user.email", "a@b.c"], repo)
+    _git(["config", "user.name", "tester"], repo)
+    (repo / "f.txt").write_text("one\n", encoding="utf-8")
+    _git(["add", "-A"], repo)
+    _git(["commit", "-m", "base"], repo)
+    _git(["checkout", "-b", "work"], repo)
+    (repo / "f.txt").write_text("one\ntwo\n", encoding="utf-8")
+    _git(["add", "-A"], repo)
+    _git(["commit", "-m", "work"], repo)  # committed: HEAD == working tree
+
+    config = Config()
+    config.app.database_path = str(tmp_path / "worker.sqlite3")
+    db = Database(config.app.database_path)
+    db.init()
+    db.upsert_ticket({"key": "A-1", "summary": "One", "status": "To Do", "eligibility": "eligible"})
+    run_id = db.create_run("A-1")
+    db.update_run(run_id, state="done", workspace_path=str(repo), base_branch="main", branch_name="work")
+    client = TestClient(create_app(config, db))
+
+    # Without base: original equals HEAD (committed) -> no diff content.
+    head_view = client.get(f"/runs/{run_id}/workspace/file", params={"path": "f.txt"}).json()
+    assert head_view["original_content"] == "one\ntwo\n"
+    # With base=main: original is the base version, so the committed change is visible.
+    base_view = client.get(f"/runs/{run_id}/workspace/file", params={"path": "f.txt", "base": "main"}).json()
+    assert base_view["original_content"] == "one\n"
+    assert base_view["content"] == "one\ntwo\n"

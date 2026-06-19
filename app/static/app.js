@@ -218,6 +218,8 @@ function initWebIde(root = document) {
   if (!ide || ide.dataset.ideBound === "1") return;
   ide.dataset.ideBound = "1";
   const runId = ide.dataset.runId;
+  const diffBase = ide.dataset.diffBase || "";
+  const baseQuery = diffBase ? `&base=${encodeURIComponent(diffBase)}` : "";
   const fileList = ide.querySelector("#web-ide-file-list");
   const editor = ide.querySelector("#web-ide-content");
   const preview = ide.querySelector("#web-ide-preview");
@@ -233,7 +235,7 @@ function initWebIde(root = document) {
   let originalContent = "";
   let lastLoadedContent = "";
   let currentFiles = [];
-  let mode = "edit";
+  let mode = ide.dataset.defaultMode === "diff" && diffView ? "diff" : "edit";
 
   const setStatus = (message) => { if (status) status.textContent = message; };
   const langFor = (path) => {
@@ -305,7 +307,7 @@ function initWebIde(root = document) {
 
   const loadFile = async (path) => {
     setStatus("Loading...");
-    const response = await fetch(`/runs/${runId}/workspace/file?path=${encodeURIComponent(path)}`, { cache: "no-store" });
+    const response = await fetch(`/runs/${runId}/workspace/file?path=${encodeURIComponent(path)}${baseQuery}`, { cache: "no-store" });
     const data = await response.json();
     if (!response.ok) { setStatus(data.error || "Could not open file"); return; }
     activePath = data.path;
@@ -373,7 +375,7 @@ function initWebIde(root = document) {
       if (oldSignature !== newSignature) setFiles(files);
       if (!activePath) return;
       if (hasUnsaved()) { setStatus("Live updates paused: unsaved edits."); return; }
-      const fileResponse = await fetch(`/runs/${runId}/workspace/file?path=${encodeURIComponent(activePath)}`, { cache: "no-store" });
+      const fileResponse = await fetch(`/runs/${runId}/workspace/file?path=${encodeURIComponent(activePath)}${baseQuery}`, { cache: "no-store" });
       if (!fileResponse.ok) return;
       const fileData = await fileResponse.json();
       const remoteContent = fileData.content || "";

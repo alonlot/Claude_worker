@@ -705,7 +705,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         return JSONResponse(list_workspace_files(run))
 
     @app.get("/runs/{run_id}/workspace/file")
-    async def workspace_file(run_id: int, request: Request, path: str = ""):
+    async def workspace_file(run_id: int, request: Request, path: str = "", base: str = ""):
         run = owned_run(run_id, owner_of(request))
         try:
             file_path = safe_workspace_file(run, path)
@@ -714,7 +714,14 @@ def create_app(config: Config, db: Database) -> FastAPI:
             content = file_path.read_text(encoding="utf-8", errors="replace")
             original_content = ""
             if run and run["workspace_path"]:
-                original_content = git_head_file(run["workspace_path"], path)
+                # When a base branch is requested (merge-request review), diff the
+                # committed work against that base instead of HEAD; otherwise the
+                # committed file equals HEAD and the diff would look empty.
+                remote = request.app.state.config.git.remote_name
+                if base.strip():
+                    original_content = git_base_file(run["workspace_path"], remote, base.strip(), path)
+                else:
+                    original_content = git_head_file(run["workspace_path"], path)
             return JSONResponse({"path": path, "content": content, "original_content": original_content})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
@@ -1296,9 +1303,30 @@ def safe_workspace_file(run, relative_path: str) -> Path:
 
 
 def git_head_file(workspace_path: str, relative_path: str) -> str:
+    return _git_show_file(workspace_path, "HEAD", relative_path)
+
+
+def git_base_file(workspace_path: str, remote: str, base: str, relative_path: str) -> str:
+    """The file as it exists on the base branch, for branch-vs-base diffs.
+
+    Tries the remote-tracking base first (origin/main), then a merge-base, then
+    the local base branch. Returns "" when the file is new on this branch.
+    """
+    candidates = [f"{remote}/{base}", base]
+    merge_base = _git_capture(workspace_path, ["merge-base", f"{remote}/{base}", "HEAD"])
+    if merge_base:
+        candidates.insert(0, merge_base)
+    for ref in candidates:
+        content = _git_show_file(workspace_path, ref, relative_path)
+        if content:
+            return content
+    return ""
+
+
+def _git_show_file(workspace_path: str, ref: str, relative_path: str) -> str:
     try:
         proc = subprocess.run(
-            ["git", "show", f"HEAD:{relative_path}"],
+            ["git", "show", f"{ref}:{relative_path}"],
             cwd=workspace_path,
             text=True,
             capture_output=True,
@@ -1306,9 +1334,15 @@ def git_head_file(workspace_path: str, relative_path: str) -> str:
         )
     except Exception:
         return ""
-    if proc.returncode != 0:
+    return proc.stdout if proc.returncode == 0 else ""
+
+
+def _git_capture(workspace_path: str, args: list[str]) -> str:
+    try:
+        proc = subprocess.run(["git", *args], cwd=workspace_path, text=True, capture_output=True, check=False)
+    except Exception:
         return ""
-    return proc.stdout
+    return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
 def parse_ci_jobs(raw: str) -> list[dict[str, str]]:
