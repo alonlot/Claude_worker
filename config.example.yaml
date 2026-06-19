@@ -44,6 +44,11 @@ jira:
     - Done
   required_text: ""
   max_results: 25
+  # Write-back (off by default keeps the worker read-only). When enabled, a
+  # finished run can comment on the Jira issue and move it to a target status.
+  writeback_enabled: false
+  writeback_transition: ""   # e.g. "In Review"; blank = do not transition
+  writeback_comment: true    # post branch / commit / PR link / run report
 
 git:
   username: ""

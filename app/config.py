@@ -17,7 +17,7 @@ DEFAULT_OWNER = "local"
 
 # Config sections that are stored per user (editable on the per-user Settings page).
 # Everything else (app, auth, docker) is server-level and only an admin edits it.
-USER_SECTIONS = ("jira", "git", "claude", "ui", "delivery")
+USER_SECTIONS = ("jira", "git", "claude", "ui", "delivery", "notify", "test_gate")
 
 
 class IndentedSafeDumper(yaml.SafeDumper):
@@ -44,6 +44,14 @@ class JiraConfig:
     excluded_statuses: list[str] = field(default_factory=lambda: ["Review", "Done"])
     required_text: str = ""
     max_results: int = 25
+    # Write-back: when enabled, a finished run can comment on the Jira ticket and
+    # move it to a target status. Off by default so the worker stays read-only.
+    writeback_enabled: bool = False
+    # When set, the ticket is transitioned to this status name after a clean run
+    # (e.g. "In Review"). Empty means do not transition.
+    writeback_transition: str = ""
+    # Post a comment (branch, commit, PR/MR link, run report) when a run finishes.
+    writeback_comment: bool = True
 
 
 @dataclass
@@ -80,6 +88,37 @@ class DeliveryConfig:
     scp_path: str = ""
     ssh_key: str = ""  # path on the server to the private key
     ssh_port: int = 22
+
+
+@dataclass
+class NotifyConfig:
+    """Outbound notifications for run events (per user).
+
+    Email goes through any SMTP server; the webhook posts a small JSON payload
+    (works with Slack/Mattermost incoming webhooks and generic endpoints).
+    """
+    email_enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    email_from: str = ""
+    email_to: str = ""
+    webhook_enabled: bool = False
+    webhook_url: str = ""
+
+
+@dataclass
+class TestGateConfig:
+    """Run the repo's own tests before a run is marked done / pushed.
+
+    The command runs in the run's workspace. A non-zero exit routes the run to
+    'needs_cr_fix' (so the failing output can be fixed) and blocks auto-push.
+    """
+    enabled: bool = False
+    command: str = ""  # e.g. "pytest -q" or "npm test"
+    timeout_seconds: int = 1800
 
 
 @dataclass
@@ -132,6 +171,8 @@ class Config:
     claude: ClaudeConfig = field(default_factory=ClaudeConfig)
     ui: UiConfig = field(default_factory=UiConfig)
     delivery: DeliveryConfig = field(default_factory=DeliveryConfig)
+    notify: NotifyConfig = field(default_factory=NotifyConfig)
+    test_gate: TestGateConfig = field(default_factory=TestGateConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
     docker: DockerConfig = field(default_factory=DockerConfig)
 
@@ -179,6 +220,8 @@ def _config_from_data(raw: dict[str, Any]) -> Config:
         claude=_config_section(ClaudeConfig, raw, "claude"),
         ui=_config_section(UiConfig, raw, "ui"),
         delivery=_config_section(DeliveryConfig, raw, "delivery"),
+        notify=_config_section(NotifyConfig, raw, "notify"),
+        test_gate=_config_section(TestGateConfig, raw, "test_gate"),
         auth=_config_section(AuthConfig, raw, "auth"),
         docker=_config_section(DockerConfig, raw, "docker"),
     )
@@ -208,6 +251,8 @@ def apply_user_sections(base: Config, sections: dict[str, Any] | None) -> Config
         "claude": _section_to_dict(base.claude),
         "ui": _section_to_dict(base.ui),
         "delivery": _section_to_dict(base.delivery),
+        "notify": _section_to_dict(base.notify),
+        "test_gate": _section_to_dict(base.test_gate),
     }
     for name in USER_SECTIONS:
         incoming = (sections or {}).get(name)
@@ -250,6 +295,11 @@ def load_config_text(path: Path | str = CONFIG_PATH) -> str:
 def secret_values(config: Config) -> list[str]:
     return [
         value
-        for value in [config.jira.token, config.git.token, config.claude.api_key]
+        for value in [
+            config.jira.token,
+            config.git.token,
+            config.claude.api_key,
+            config.notify.smtp_password,
+        ]
         if value and len(value) >= 4
     ]

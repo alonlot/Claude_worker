@@ -294,6 +294,7 @@ class Worker:
                 self.db.add_notification("Run finished", ticket["ticket_key"], "success", run_id, owner=self.owner)
                 if self.config.git.auto_push:
                     self._auto_publish(run_id, ticket, discovery, branch)
+                await self._jira_writeback(run_id)
 
     def _auto_publish(self, run_id: int, ticket: dict[str, Any], discovery: dict[str, str], branch: str) -> None:
         """Push (and optionally open a merge request) for a clean done run."""
@@ -360,6 +361,47 @@ class Worker:
             finished_at=datetime.utcnow().isoformat(),
         )
         self.db.add_notification("CR fix finished", run["ticket_key"], "success", run_id, owner=self.owner)
+        await self._jira_writeback(run_id)
+
+    async def _jira_writeback(self, run_id: int) -> None:
+        """Comment on and/or transition the Jira ticket for a finished run.
+
+        Config-gated (jira.writeback_enabled) and best-effort: any failure is
+        logged and notified but never fails the run.
+        """
+        cfg = self.config.jira
+        if not cfg.writeback_enabled:
+            return
+        run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))
+        if not run:
+            return
+        key = run["ticket_key"]
+        client = JiraClient(cfg)
+        try:
+            if cfg.writeback_comment:
+                mr_url = self.db.get_state(f"merge_request_url:{run_id}", "", owner=self.owner)
+                lines = [
+                    f"Automated run for {key} finished ({run['state']}).",
+                    f"Branch: {run['branch_name']}",
+                ]
+                if run["commit_sha"]:
+                    lines.append(f"Commit: {run['commit_sha']}")
+                if mr_url:
+                    lines.append(f"Merge request: {mr_url}")
+                if run["run_report"]:
+                    lines.append("")
+                    lines.append(run["run_report"])
+                await client.add_comment(key, "\n".join(lines))
+                self._log(run_id, "jira", f"Commented on {key}")
+            if cfg.writeback_transition:
+                moved = await client.transition_issue(key, cfg.writeback_transition)
+                if moved:
+                    self._log(run_id, "jira", f"Transitioned {key} -> {cfg.writeback_transition}")
+                else:
+                    self._log(run_id, "jira", f"No transition named '{cfg.writeback_transition}' for {key}")
+        except Exception as exc:
+            self._log(run_id, "jira", f"Jira write-back failed: {exc}")
+            self.db.add_notification("Jira write-back failed", f"{key}: {exc}", "warning", run_id, owner=self.owner)
 
     def push_run(self, run_id: int) -> str:
         run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))

@@ -48,6 +48,58 @@ class JiraClient:
 
         return [self._normalize_issue(issue) for issue in data.get("issues", [])]
 
+    def _require_auth(self) -> tuple[str, str, str]:
+        if not self.config.url or not self.config.email or not self.config.token:
+            raise RuntimeError("Jira url, email, and token must be configured")
+        return self.config.url.rstrip("/"), self.config.email, self.config.token
+
+    async def add_comment(self, issue_key: str, body: str) -> None:
+        """Post a plain-text comment on a Jira issue (Cloud ADF body)."""
+        base, email, token = self._require_auth()
+        url = f"{base}/rest/api/3/issue/{issue_key}/comment"
+        payload = {
+            "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": line or " "}],
+                    }
+                    for line in body.split("\n")
+                ],
+            }
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, json=payload, auth=(email, token))
+            resp.raise_for_status()
+
+    async def transition_issue(self, issue_key: str, status_name: str) -> bool:
+        """Move an issue to the named status. Returns False if no match exists."""
+        target = (status_name or "").strip().lower()
+        if not target:
+            return False
+        base, email, token = self._require_auth()
+        url = f"{base}/rest/api/3/issue/{issue_key}/transitions"
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, auth=(email, token))
+            resp.raise_for_status()
+            transitions = resp.json().get("transitions", []) or []
+            match = next(
+                (
+                    t
+                    for t in transitions
+                    if str(t.get("name", "")).lower() == target
+                    or str((t.get("to") or {}).get("name", "")).lower() == target
+                ),
+                None,
+            )
+            if not match:
+                return False
+            post = await client.post(url, json={"transition": {"id": match["id"]}}, auth=(email, token))
+            post.raise_for_status()
+            return True
+
     def _normalize_issue(self, issue: dict[str, Any]) -> dict[str, Any]:
         fields = issue.get("fields", {})
         status = (fields.get("status") or {}).get("name", "")

@@ -16,6 +16,9 @@
       <label>Excluded statuses <textarea class="compact" name="excluded_statuses">{{ excluded_statuses_text }}</textarea></label>
       <label>Required text <input name="required_text" value="{{ config.jira.required_text }}"></label>
       <label>Max results <input name="max_results" type="number" min="1" value="{{ config.jira.max_results }}"></label>
+      <label class="check"><input name="jira_writeback_enabled" type="checkbox" {% if config.jira.writeback_enabled %}checked{% endif %}> Write back to Jira when a run finishes</label>
+      <label>Transition to status <input name="jira_writeback_transition" value="{{ config.jira.writeback_transition }}" placeholder="In Review (leave blank to skip)"></label>
+      <label class="check"><input name="jira_writeback_comment" type="checkbox" {% if config.jira.writeback_comment %}checked{% endif %}> Post a comment (branch, commit, PR, report)</label>
     </fieldset>
 
     <fieldset>
