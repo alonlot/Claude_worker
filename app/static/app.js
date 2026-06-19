@@ -395,6 +395,40 @@ function initWebIde(root = document) {
   window.addEventListener("beforeunload", () => window.clearInterval(refreshIntervalId), { once: true });
 }
 
+function initSkillsSearch(root = document) {
+  const market = root.querySelector("#skills-marketplace");
+  if (!market || market.dataset.searchBound === "1") return;
+  const textInput = market.querySelector("#market-search-text");
+  const categorySelect = market.querySelector("#market-search-category");
+  if (!textInput && !categorySelect) return;
+  market.dataset.searchBound = "1";
+  const groups = [...market.querySelectorAll(".market-group")];
+  const noResults = market.querySelector("#market-no-results");
+
+  const apply = () => {
+    const query = (textInput ? textInput.value : "").trim().toLowerCase();
+    const category = categorySelect ? categorySelect.value : "";
+    let visibleCount = 0;
+    for (const group of groups) {
+      let groupVisible = 0;
+      for (const card of group.querySelectorAll(".skill-card")) {
+        const matchesText = !query || (card.dataset.search || "").includes(query);
+        const matchesCategory = !category || card.dataset.category === category;
+        const show = matchesText && matchesCategory;
+        card.classList.toggle("hidden", !show);
+        if (show) groupVisible++;
+      }
+      group.classList.toggle("hidden", groupVisible === 0);
+      visibleCount += groupVisible;
+    }
+    if (noResults) noResults.classList.toggle("hidden", visibleCount !== 0);
+  };
+
+  if (textInput) textInput.addEventListener("input", apply);
+  if (categorySelect) categorySelect.addEventListener("change", apply);
+  apply();
+}
+
 function initCodeReviewAutoScan(root = document) {
   const panel = root.querySelector("#code-review-auto");
   if (!panel || panel.dataset.autoScanBound === "1") return;
@@ -490,6 +524,7 @@ initLiveLogsPolling(document);
 initWebIde(document);
 initCodeReviewAutoScan(document);
 initCodeReviewCheckboxSync(document);
+initSkillsSearch(document);
 document.addEventListener("htmx:afterSwap", (event) => {
   const root = event.target instanceof Element ? event.target : document;
   bindBusyButtons(root);

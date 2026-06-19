@@ -87,38 +87,56 @@
   </div>
 </section>
 
-<section class="panel">
+<section class="panel" id="skills-marketplace">
   <div class="section-title">
     <h2>Marketplace</h2>
     <p>Public skills shared by everyone, grouped by category. Like the ones you want to use; liked skills can be attached to a ticket plan.</p>
   </div>
+  {% if market_groups %}
+  <div class="market-search">
+    <input type="search" id="market-search-text" placeholder="Search skills by name, description, or author…" autocomplete="off">
+    <select id="market-search-category">
+      <option value="">All categories</option>
+      {% for group in market_groups %}
+      <option value="{{ group.category }}">{{ group.category }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
   {% for group in market_groups %}
-  <h3 class="category-heading">{{ group.category }}</h3>
-  <div class="list skills-market">
-    {% for skill in group.skills %}
-    <article class="skill-card">
-      <div class="ticket-focus-head">
-        <strong>{{ skill.name }}</strong>
-        <span class="pill">♥ {{ skill.like_count }}</span>
-      </div>
-      <p>{{ skill.description or "No description." }}</p>
-      <small>by {{ skill.owner }}{% if skill.category %} · {{ skill.category }}{% endif %}</small>
-      <details>
-        <summary>View content</summary>
-        <pre>{{ skill.content }}</pre>
-      </details>
-      <div class="row">
-        {% if skill.id in liked_ids %}
-        <form method="post" action="/skills/{{ skill.id }}/unlike"><button class="secondary">♥ Liked — unlike</button></form>
-        {% else %}
-        <form method="post" action="/skills/{{ skill.id }}/like"><button>♡ Like</button></form>
-        {% endif %}
-      </div>
-    </article>
-    {% endfor %}
+  <div class="market-group" data-category="{{ group.category }}">
+    <h3 class="category-heading">{{ group.category }}</h3>
+    <div class="list skills-market">
+      {% for skill in group.skills %}
+      <article class="skill-card"
+               data-category="{{ group.category }}"
+               data-search="{{ (skill.name ~ ' ' ~ skill.description ~ ' ' ~ skill.content ~ ' ' ~ skill.owner ~ ' ' ~ group.category) | lower }}">
+        <div class="ticket-focus-head">
+          <strong>{{ skill.name }}</strong>
+          <span class="pill">♥ {{ skill.like_count }}</span>
+        </div>
+        <p>{{ skill.description or "No description." }}</p>
+        <small>by {{ skill.owner }}{% if skill.category %} · {{ skill.category }}{% endif %}</small>
+        <details>
+          <summary>View content</summary>
+          <pre>{{ skill.content }}</pre>
+        </details>
+        <div class="row">
+          {% if skill.id in liked_ids %}
+          <form method="post" action="/skills/{{ skill.id }}/unlike"><button class="secondary">♥ Liked — unlike</button></form>
+          {% else %}
+          <form method="post" action="/skills/{{ skill.id }}/like"><button>♡ Like</button></form>
+          {% endif %}
+        </div>
+      </article>
+      {% endfor %}
+    </div>
   </div>
   {% else %}
   <p class="empty">No public skills yet. Publish one to share it.</p>
   {% endfor %}
+  {% if market_groups %}
+  <p class="empty hidden" id="market-no-results">No skills match your search.</p>
+  {% endif %}
 </section>
 {% endblock %}
