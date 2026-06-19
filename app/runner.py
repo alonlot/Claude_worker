@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shlex
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -266,6 +267,18 @@ class Worker:
         review_output = await self.claude.run_prompt("review", review_prompt_text, cwd=repo_path)
         self.db.upsert_sub_agent(run_id, "claude-review", "Review the implementation", "done", 100)
         needs_fix = self._review_needs_fix(review_output)
+        if not needs_fix and self.config.test_gate.enabled:
+            label = self.config.test_gate.command or "tests"
+            self.db.upsert_sub_agent(run_id, "test-gate", label, "running", 88)
+            gate_ok, gate_output = await self._run_test_gate(run_id, repo_path)
+            self.db.upsert_sub_agent(run_id, "test-gate", label, "done" if gate_ok else "failed", 100)
+            if not gate_ok:
+                needs_fix = True
+                review_output += (
+                    "\n\nREVIEW_RESULT: needs_fix\n"
+                    "Automated test gate failed. Fix the failing tests before this can be pushed:\n"
+                    + gate_output
+                )
         self.db.update_run(run_id, review_output=review_output, state="needs_cr_fix" if needs_fix else "done", progress=92)
 
         if needs_fix and self.config.claude.auto_cr_fix and self.config.claude.allow_cr_fix:
@@ -406,6 +419,40 @@ class Worker:
         except Exception as exc:
             self._log(run_id, "jira", f"Jira write-back failed: {exc}")
             self.db.add_notification("Jira write-back failed", f"{key}: {exc}", "warning", run_id, owner=self.owner)
+
+    async def _run_test_gate(self, run_id: int, repo_path: Path) -> tuple[bool, str]:
+        """Run the configured test command in the workspace. Returns (passed, tail_output)."""
+        command = (self.config.test_gate.command or "").strip()
+        if not command:
+            self._log(run_id, "test", "Test gate enabled but no command configured; skipping.")
+            return True, ""
+        timeout = max(30, int(self.config.test_gate.timeout_seconds or 1800))
+        self._log(run_id, "test", f"Running test gate: {command}")
+
+        def _run() -> tuple[int, str]:
+            proc = subprocess.run(
+                shlex.split(command),
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+        try:
+            code, output = await asyncio.to_thread(_run)
+        except subprocess.TimeoutExpired:
+            self._log(run_id, "test", f"Test gate timed out after {timeout}s")
+            return False, f"Test command timed out after {timeout}s"
+        except Exception as exc:
+            self._log(run_id, "test", f"Test gate could not run: {exc}")
+            return False, f"Test command could not run: {exc}"
+        tail = mask_secrets(output, secret_values(self.config)).strip()[-4000:]
+        for line in tail.splitlines()[-40:]:
+            self._log(run_id, "test", line)
+        ok = code == 0
+        self._log(run_id, "test", f"Test gate {'passed' if ok else 'failed'} (exit {code})")
+        return ok, tail
 
     def push_run(self, run_id: int) -> str:
         run = self.db.fetchone("SELECT * FROM runs WHERE id=?", (run_id,))

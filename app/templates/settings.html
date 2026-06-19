@@ -69,6 +69,14 @@
     </fieldset>
 
     <fieldset>
+      <legend>Test gate</legend>
+      <p class="field-hint">Run your repo's tests in the workspace before a run is marked done. A failure routes the run to "needs CR fix" and blocks auto-push.</p>
+      <label class="check"><input name="test_gate_enabled" type="checkbox" {% if config.test_gate.enabled %}checked{% endif %}> Require tests to pass before done/push</label>
+      <label>Command <input name="test_gate_command" value="{{ config.test_gate.command }}" placeholder="pytest -q  (or  npm test)"></label>
+      <label>Timeout seconds <input name="test_gate_timeout_seconds" type="number" min="30" value="{{ config.test_gate.timeout_seconds }}"></label>
+    </fieldset>
+
+    <fieldset>
       <legend>UI</legend>
       <label>Title <input name="ui_title" value="{{ config.ui.title }}"></label>
     </fieldset>

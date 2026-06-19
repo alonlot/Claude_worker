@@ -944,6 +944,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
         notify_email_to: str = Form(""),
         notify_webhook_enabled: str | None = Form(None),
         notify_webhook_url: str = Form(""),
+        test_gate_enabled: str | None = Form(None),
+        test_gate_command: str = Form(""),
+        test_gate_timeout_seconds: int = Form(1800),
     ):
         owner = owner_of(request)
         try:
@@ -997,6 +1000,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     "email_to": notify_email_to,
                     "webhook_enabled": notify_webhook_enabled == "on",
                     "webhook_url": notify_webhook_url,
+                },
+                "test_gate": {
+                    "enabled": test_gate_enabled == "on",
+                    "command": test_gate_command,
+                    "timeout_seconds": test_gate_timeout_seconds,
                 },
             }
             db.set_user_config(owner, sections)
