@@ -18,6 +18,10 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -103,3 +107,96 @@ def get_execution_backend(config: Config) -> ExecutionBackend:
     if config.docker.enabled:
         return DockerBackend(config.docker)
     return SubprocessBackend()
+
+
+def docker_preflight(config: Config) -> tuple[bool, str]:
+    """Verify the Docker execution path end-to-end on the current host.
+
+    Runs the same ``DockerBackend`` invocation real runs use, but with a
+    harmless ``claude --version``, so a green result means containers actually
+    start from the agent image with the Claude CLI on PATH. Blocking (shells
+    out to ``docker``); call from a thread. Safe to run repeatedly.
+    """
+    docker = config.docker
+    if not docker.enabled:
+        return False, "Docker mode is off (set docker.enabled: true to sandbox runs in containers)."
+    if not shutil.which("docker"):
+        return False, "The 'docker' CLI is not on PATH on this host. Install Docker Engine / Docker Desktop."
+
+    def _run(argv: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+
+    try:
+        info = _run(["docker", "info", "--format", "{{.ServerVersion}}"], 20)
+    except Exception as exc:  # noqa: BLE001 - report any docker failure as text
+        return False, f"Could not run docker: {exc}"
+    if info.returncode != 0:
+        return False, "Docker daemon is not reachable: " + (info.stderr or info.stdout).strip()[:300]
+    server = info.stdout.strip()
+
+    inspect = _run(["docker", "image", "inspect", docker.image], 20)
+    if inspect.returncode != 0:
+        return False, (
+            f"Agent image '{docker.image}' is missing on this host. Build it: "
+            f"docker build -t {docker.image} ./docker"
+        )
+
+    try:
+        base_cmd = shlex.split(config.claude.command or "claude")
+    except ValueError:
+        base_cmd = ["claude"]
+    inv = DockerBackend(docker).build(base_cmd + ["--version"], None, {}, "cw_preflight")
+    try:
+        smoke = _run(inv.argv, 90)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Container smoke test could not run: {exc}"
+    if smoke.returncode != 0:
+        detail = (smoke.stderr or smoke.stdout).strip()[-300:]
+        return False, (
+            f"Container started but '{' '.join(base_cmd)} --version' failed inside it. "
+            f"Make sure claude.command is just 'claude' in Docker mode. Detail: {detail}"
+        )
+
+    version = (smoke.stdout.strip().splitlines() or ["(no output)"])[0]
+
+    # The implementation agent must be able to WRITE to the bind-mounted
+    # workspace. The image runs as a non-root user, so a uid mismatch with the
+    # host clone is the most common silent failure — verify it for real.
+    write_ok, write_detail = _docker_workspace_write_test(docker)
+    if not write_ok:
+        return False, (
+            f"Docker starts (daemon {server}, image {docker.image}), but the container cannot write to a "
+            f"bind-mounted workspace, so the agent could not edit files. {write_detail}"
+        )
+
+    note = "" if config.claude.api_key else (
+        " WARNING: claude.api_key is empty — the container will NOT inherit your host Claude login, "
+        "so real runs need an API key set in config."
+    )
+    return True, (
+        f"Docker OK (daemon {server}, image {docker.image}). Smoke test: {version}. "
+        f"Workspace write: OK.{note}"
+    )
+
+
+def _docker_workspace_write_test(docker: DockerConfig) -> tuple[bool, str]:
+    """Bind-mount a temp dir and confirm the container can write into it."""
+    marker = ".cw_preflight_write"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            inv = DockerBackend(docker).build(
+                ["sh", "-lc", f"echo ok > {docker.workspace_mount}/{marker}"], tmp, {}, "cw_preflight_write"
+            )
+            try:
+                proc = subprocess.run(inv.argv, capture_output=True, text=True, timeout=60)
+            except Exception as exc:  # noqa: BLE001
+                return False, f"Write test could not run: {exc}"
+            if not (Path(tmp) / marker).exists():
+                detail = (proc.stderr or proc.stdout).strip()[-300:]
+                return False, (
+                    "Try mounting a workspace the container user can write to, or run the container as the "
+                    f"host user (add '--user' via docker.extra_args). Detail: {detail}"
+                )
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Write test setup failed: {exc}"
+    return True, "ok"

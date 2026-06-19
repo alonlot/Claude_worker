@@ -32,6 +32,7 @@ from app.db import Database
 from app.jira_client import JiraClient
 from app import notify
 from app.demo import demo_ci_jobs_for_display
+from app.execution import docker_preflight
 from app.runner import WorkerRegistry
 from app.utils import ensure_child_path
 
@@ -1054,6 +1055,13 @@ def create_app(config: Config, db: Database) -> FastAPI:
             request.app.state.flash = f"Test command looks runnable: '{program}' found at {found}."
         else:
             request.app.state.flash = f"'{program}' was not found on PATH (it must exist where runs execute)."
+        return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/test-docker")
+    async def test_docker(request: Request):
+        config = registry.user_config(owner_of(request))
+        ok, message = await asyncio.to_thread(docker_preflight, config)
+        request.app.state.flash = ("Docker preflight passed. " if ok else "Docker preflight failed. ") + message
         return RedirectResponse("/settings", status_code=303)
 
     @app.post("/settings")

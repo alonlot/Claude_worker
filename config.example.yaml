@@ -23,6 +23,14 @@ auth:
 # When enabled, each run executes the Claude agent inside a throwaway container
 # (build the image with: docker build -t claude-worker-agent:latest ./docker).
 # Leave disabled for host-subprocess execution (dev / Windows).
+#
+# Two things to know for Docker mode (verify both with "Check Docker run" in
+# Settings -> Connection Tests):
+#   1. The container does NOT inherit your host Claude login. Set claude.api_key
+#      below so the agent can authenticate inside the container.
+#   2. The image runs as a non-root user. If the host workspace clone is owned by
+#      a different uid, the agent cannot edit files. Run the container as the host
+#      user when needed, e.g. extra_args: ["--user", "1000:1000"].
 docker:
   enabled: false
   image: claude-worker-agent:latest
