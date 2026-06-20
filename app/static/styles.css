@@ -733,6 +733,9 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
 }
 .web-ide-dir[open] > summary::before { content: "\25BE"; /* triangle down */ }
 .web-ide-dir > summary:hover { background: #1e293b; color: #e2e9f7; }
+.web-ide-folder-icon { display: inline-flex; align-items: center; color: #e3b341; flex: 0 0 auto; }
+.web-ide-folder-icon svg { display: block; }
+.web-ide-dir[open] > summary > .web-ide-folder-icon { color: #f0c860; }
 .web-ide-dir .web-ide-file { box-sizing: border-box; }
 /* Follow-agent toggle button (on/off) */
 .ide-toggle {

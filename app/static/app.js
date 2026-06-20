@@ -213,6 +213,12 @@ const IDE_HL_LANG = {
   ".rb": "ruby", ".php": "php", ".toml": "ini", ".ini": "ini",
 };
 
+// Inline folder icon (the Web IDE is air-gapped, so no icon-font/CDN).
+const IDE_FOLDER_SVG =
+  '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">' +
+  '<path fill="currentColor" d="M1.5 4A1.5 1.5 0 0 1 3 2.5h3.1c.4 0 .78.16 1.06.44L8.2 4.5H13A1.5 1.5 0 0 1 14.5 6v6A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12V4Z"/>' +
+  "</svg>";
+
 function initWebIde(root = document) {
   const ide = root.querySelector("#web-ide");
   if (!ide || ide.dataset.ideBound === "1") return;
@@ -327,7 +333,11 @@ function initWebIde(root = document) {
       if (!collapsedDirs.has(dirNode.path)) details.open = true;
       const summary = document.createElement("summary");
       summary.className = "web-ide-dir-name";
-      summary.textContent = name;
+      const icon = document.createElement("span");
+      icon.className = "web-ide-folder-icon";
+      icon.innerHTML = IDE_FOLDER_SVG;
+      summary.appendChild(icon);
+      summary.appendChild(document.createTextNode(name));
       details.appendChild(summary);
       details.addEventListener("toggle", () => {
         if (details.open) collapsedDirs.delete(dirNode.path);
