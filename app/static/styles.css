@@ -695,10 +695,14 @@ button.tiny { padding: 7px 10px; font-size: 12px; }
   text-align: left;
   font-size: 12px;
   font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
+.web-ide-file-icon { flex: 0 0 auto; display: inline-flex; align-items: center; }
+.web-ide-file-icon svg { display: block; }
+.web-ide-file-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .web-ide-file:hover {
   background: #1e293b;
 }

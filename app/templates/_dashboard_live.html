@@ -144,6 +144,9 @@
         <div class="row">
           <a class="button-link tiny secondary" href="/runs/{{ run.id }}">Open</a>
           <form method="post" action="/tickets/{{ run.ticket_key }}/rerun"><button class="tiny secondary">Rerun</button></form>
+          {% if run.state in ["failed", "cancelled"] and run.workspace_path %}
+          <form method="post" action="/runs/{{ run.id }}/retry"><button class="tiny" data-loading-text="Retrying...">Retry (same workspace)</button></form>
+          {% endif %}
           {% if run.state in ["done", "needs_cr_fix", "pushed"] %}
           {% if run.state == "done" and run.commit_sha %}
           <a class="button-link tiny" href="/runs/{{ run.id }}/push-preview">Push preview</a>

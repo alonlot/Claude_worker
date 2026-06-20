@@ -15,7 +15,7 @@ from urllib.parse import quote
 from collections.abc import Awaitable
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -443,6 +443,29 @@ def create_app(config: Config, db: Database) -> FastAPI:
         request.app.state.flash = "CR fix started."
         return RedirectResponse("/", status_code=303)
 
+    @app.post("/runs/{run_id}/retry")
+    async def retry_run(run_id: int, request: Request):
+        owner = owner_of(request)
+        run = owned_run(run_id, owner)
+        if not run:
+            return RedirectResponse("/", status_code=303)
+        if run["state"] not in ("failed", "cancelled"):
+            request.app.state.flash = "Only a failed or cancelled run can be retried."
+            return RedirectResponse(f"/runs/{run_id}", status_code=303)
+        if not run["workspace_path"] or not Path(run["workspace_path"]).exists():
+            request.app.state.flash = "That run's workspace is gone — use Rerun to start fresh."
+            return RedirectResponse(f"/runs/{run_id}", status_code=303)
+        spawn_tracked_task(
+            worker_for(request).retry_run(run_id),
+            db,
+            title="Retry failed",
+            message=f"Retry of run #{run_id} crashed.",
+            run_id=run_id,
+            owner=owner,
+        )
+        request.app.state.flash = f"Retrying run #{run_id} in its existing workspace."
+        return RedirectResponse("/", status_code=303)
+
     @app.post("/runs/{run_id}/deliver")
     async def deliver_run(run_id: int, request: Request):
         if not owned_run(run_id, owner_of(request)):
@@ -730,6 +753,42 @@ def create_app(config: Config, db: Database) -> FastAPI:
             return PlainTextResponse("", status_code=404)
         rows = db.fetchall("SELECT phase, line FROM logs WHERE run_id=? ORDER BY id", (run_id,))
         return "\n".join(f"[{row['phase']}] {row['line']}" for row in rows)
+
+    @app.get("/runs/{run_id}/logs/stream")
+    async def stream_logs(run_id: int, request: Request, after: int = 0):
+        if not owned_run(run_id, owner_of(request)):
+            return PlainTextResponse("", status_code=404)
+        # Resume point: Last-Event-ID (set by the browser on auto-reconnect)
+        # wins over the initial ?after= the page rendered with.
+        resume = request.headers.get("last-event-id")
+        start_id = int(resume) if (resume or "").isdigit() else after
+        terminal = {"done", "failed", "cancelled", "pushed"}
+
+        async def event_gen():
+            last_id = start_id
+            while True:
+                if await request.is_disconnected():
+                    break
+                rows = db.fetchall(
+                    "SELECT id, phase, line FROM logs WHERE run_id=? AND id>? ORDER BY id",
+                    (run_id, last_id),
+                )
+                for row in rows:
+                    last_id = int(row["id"])
+                    text = f"[{row['phase']}] {row['line']}".replace("\r", "")
+                    body = "".join(f"data: {line}\n" for line in text.split("\n"))
+                    yield f"id: {last_id}\n{body}\n"
+                state_row = db.fetchone("SELECT state FROM runs WHERE id=?", (run_id,))
+                if state_row and state_row["state"] in terminal:
+                    yield "event: done\ndata: end\n\n"
+                    break
+                await asyncio.sleep(0.6)
+
+        return StreamingResponse(
+            event_gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/runs/{run_id}/workspace.zip")
     async def download_workspace_zip(run_id: int, request: Request):

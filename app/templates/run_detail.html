@@ -88,7 +88,7 @@
         {% endfor %}
       </div>
       {% endif %}
-      <pre class="terminal tall" id="live-logs-terminal" data-run-id="{{ run.id }}">{% for log in logs %}[{{ log.phase }}] {{ log.line }}
+      <pre class="terminal tall" id="live-logs-terminal" data-run-id="{{ run.id }}" data-last-log-id="{{ logs[-1].id if logs else 0 }}">{% for log in logs %}[{{ log.phase }}] {{ log.line }}
 {% endfor %}</pre>
       {% if log_markers %}
       <div class="phase-jumps">

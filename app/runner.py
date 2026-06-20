@@ -186,6 +186,8 @@ class Worker:
 
     async def _run_ticket(self, run_id: int, item: Any) -> None:
         ticket = dict(item)
+        # Queue rows carry ticket_key, but the Claude prompts read ticket["key"].
+        ticket.setdefault("key", ticket.get("ticket_key", ""))
         queue_id = int(ticket["id"])
         plan = self.db.plan_for_queue_item(queue_id)
         self.db.update_run(run_id, state="preparing_git", progress=5)
@@ -235,6 +237,23 @@ class Worker:
         self.db.update_run(run_id, workspace_path=str(repo_path), progress=25)
         self.git.cleanup_old_clones()
 
+        await self._implement_and_finish(run_id, ticket, repo_path, branch, discovery, plan)
+
+    async def _implement_and_finish(
+        self,
+        run_id: int,
+        ticket: dict[str, Any],
+        repo_path: Path,
+        branch: str,
+        discovery: dict[str, str],
+        plan: Any,
+    ) -> None:
+        """Implement -> review -> (test gate) -> commit/finish, in an existing workspace.
+
+        Shared by a fresh run (after clone/checkout) and a retry (which reuses
+        the failed run's workspace instead of cloning again). self.claude must
+        already be set by the caller.
+        """
         self._raise_if_cancelled()
         self.db.update_run(run_id, state="running_claude", progress=30)
         plan_context = ""
@@ -646,6 +665,61 @@ Tasks:
 
     def rerun_ticket(self, ticket_key: str) -> None:
         self.db.enqueue(ticket_key, owner=self.owner)
+
+    async def retry_run(self, failed_run_id: int) -> int:
+        """Retry a failed/cancelled run in its existing workspace (no re-clone).
+
+        Reuses the original clone, branch, and any partial changes the previous
+        attempt left behind, then re-runs implementation -> review -> finish.
+        """
+        old = self.db.fetchone("SELECT * FROM runs WHERE id=? AND owner=?", (failed_run_id, self.owner))
+        if not old:
+            raise RuntimeError("Run not found")
+        if old["state"] not in ("failed", "cancelled"):
+            raise RuntimeError("Only failed or cancelled runs can be retried.")
+        workspace = old["workspace_path"] or ""
+        if not workspace or not Path(workspace).exists():
+            raise RuntimeError("Original workspace is gone — use Rerun to start fresh from a new clone.")
+        ticket_row = self.db.fetchone("SELECT * FROM tickets WHERE key=? AND owner=?", (old["ticket_key"], self.owner))
+        if not ticket_row:
+            raise RuntimeError("Ticket not found")
+        if self.lock.locked():
+            raise RuntimeError("A run is already in progress.")
+        async with self.lock:
+            ticket = dict(ticket_row)
+            ticket["ticket_key"] = ticket_row["key"]
+            branch = old["branch_name"] or branch_name(old["ticket_key"], ticket.get("summary", "work"))
+            discovery = {
+                "repo_url": old["repo_url"] or self.config.git.default_repo_url,
+                "base_branch": old["base_branch"] or self.config.git.default_base_branch or "main",
+                "summary": ticket.get("summary", "work"),
+            }
+            repo_path = Path(workspace)
+            run_id = self.db.create_run(old["ticket_key"], owner=self.owner)
+            self.db.update_run(
+                run_id,
+                repo_url=discovery["repo_url"],
+                base_branch=discovery["base_branch"],
+                branch_name=branch,
+                workspace_path=workspace,
+                progress=25,
+            )
+            self.claude = self._runner(run_id, lambda phase, line: self._log(run_id, phase, line))
+            self._log(run_id, "git", f"Retrying run #{failed_run_id} in existing workspace {repo_path}")
+            try:
+                await self._implement_and_finish(run_id, ticket, repo_path, branch, discovery, None)
+            except asyncio.CancelledError:
+                self.db.update_run(run_id, state="cancelled", error="cancelled", finished_at=datetime.utcnow().isoformat())
+                self.db.add_notification("Run cancelled", old["ticket_key"], "warning", run_id, owner=self.owner)
+            except Exception as exc:
+                friendly = self._friendly_error(str(exc))
+                self._log(run_id, "error", friendly)
+                self.db.update_run(run_id, state="failed", error=friendly, finished_at=datetime.utcnow().isoformat())
+                self.db.add_notification("Run failed", f"{old['ticket_key']}: {friendly}", "error", run_id, owner=self.owner)
+                self._notify_external("Run failed", f"{old['ticket_key']}: {friendly}", "error", run_id)
+            finally:
+                self.cancel_requested = False
+        return run_id
 
     async def start_ticket(self, ticket_key: str) -> int:
         """Queue a ticket by key for an on-demand run, bypassing the Jira gate.

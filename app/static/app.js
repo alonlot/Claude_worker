@@ -155,6 +155,25 @@ function initFollowLogs(root = document) {
   scrollToBottom();
 }
 
+function initLiveLogsStream(root = document) {
+  const terminal = root.querySelector("#live-logs-terminal");
+  if (!terminal || terminal.dataset.streamBound === "1") return;
+  const runId = terminal.dataset.runId;
+  if (!runId || typeof EventSource === "undefined") return; // fall back to polling
+  terminal.dataset.streamBound = "1";
+  terminal.dataset.pollBound = "1"; // claim the terminal so the poller stays idle
+
+  const after = terminal.dataset.lastLogId || "0";
+  const source = new EventSource(`/runs/${runId}/logs/stream?after=${encodeURIComponent(after)}`);
+  source.onmessage = (event) => {
+    const prefix = terminal.textContent && !terminal.textContent.endsWith("\n") ? "\n" : "";
+    terminal.textContent += prefix + event.data + "\n";
+  };
+  source.addEventListener("done", () => source.close());
+  const close = () => source.close();
+  window.addEventListener("beforeunload", close, { once: true });
+}
+
 function initLiveLogsPolling(root = document) {
   const terminal = root.querySelector("#live-logs-terminal");
   if (!terminal || terminal.dataset.pollBound === "1") return;
@@ -213,11 +232,27 @@ const IDE_HL_LANG = {
   ".rb": "ruby", ".php": "php", ".toml": "ini", ".ini": "ini",
 };
 
-// Inline folder icon (the Web IDE is air-gapped, so no icon-font/CDN).
+// Inline folder/file icons (the Web IDE is air-gapped, so no icon-font/CDN).
 const IDE_FOLDER_SVG =
   '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">' +
   '<path fill="currentColor" d="M1.5 4A1.5 1.5 0 0 1 3 2.5h3.1c.4 0 .78.16 1.06.44L8.2 4.5H13A1.5 1.5 0 0 1 14.5 6v6A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12V4Z"/>' +
   "</svg>";
+const IDE_FILE_SVG =
+  '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">' +
+  '<path fill="currentColor" d="M4 1.5h4.6L13 5.9V13.5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1Zm4.5 1.1V5a.5.5 0 0 0 .5.5h2.4L8.5 2.6Z"/>' +
+  "</svg>";
+// File-icon tint by extension (categorized, not one-per-language).
+const IDE_FILE_COLOR = {
+  ".py": "#6ca8e6", ".js": "#e6c24f", ".ts": "#4f9be6", ".jsx": "#e6c24f", ".tsx": "#4f9be6",
+  ".json": "#9ad06b", ".yml": "#cc7a55", ".yaml": "#cc7a55", ".toml": "#cc7a55", ".ini": "#cc7a55",
+  ".md": "#9fb0cf", ".txt": "#9fb0cf", ".html": "#e08a5b", ".xml": "#e08a5b", ".css": "#5bb0e0",
+  ".sh": "#8fc98f", ".sql": "#c98fb0", ".java": "#d08a5b", ".go": "#5bc7e0", ".rs": "#d08a6b",
+  ".c": "#7f9bd0", ".cpp": "#7f9bd0", ".rb": "#e06b6b", ".php": "#9b8fd0",
+};
+const fileTint = (name) => {
+  const dot = name.lastIndexOf(".");
+  return dot < 0 ? "#9fb0cf" : (IDE_FILE_COLOR[name.slice(dot).toLowerCase()] || "#9fb0cf");
+};
 
 function initWebIde(root = document) {
   const ide = root.querySelector("#web-ide");
@@ -351,7 +386,15 @@ function initWebIde(root = document) {
       button.type = "button";
       button.className = "web-ide-file";
       if (file.path === activePath) button.classList.add("active");
-      button.textContent = file.name;
+      const icon = document.createElement("span");
+      icon.className = "web-ide-file-icon";
+      icon.style.color = fileTint(file.name);
+      icon.innerHTML = IDE_FILE_SVG;
+      const label = document.createElement("span");
+      label.className = "web-ide-file-label";
+      label.textContent = file.name;
+      button.appendChild(icon);
+      button.appendChild(label);
       button.title = file.path;
       button.addEventListener("click", () => loadFile(file.path));
       container.appendChild(button);
@@ -592,6 +635,7 @@ function initCodeReviewCheckboxSync(root = document) {
 bindBusyButtons(document);
 initDashboardQueue(document);
 initFollowLogs(document);
+initLiveLogsStream(document);
 initLiveLogsPolling(document);
 initWebIde(document);
 initCodeReviewAutoScan(document);
@@ -602,6 +646,7 @@ document.addEventListener("htmx:afterSwap", (event) => {
   bindBusyButtons(root);
   initDashboardQueue(document);
   initFollowLogs(document);
+  initLiveLogsStream(document);
   initLiveLogsPolling(document);
   initWebIde(document);
   initCodeReviewAutoScan(document);
