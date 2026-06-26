@@ -25,6 +25,12 @@ from app.config import Config
 from app.db import Database
 
 
+# Default shared secret a self-service signup can enter to be created as an admin.
+# Stored in the DB once set, and editable from the admin page, so this is only the
+# fallback used until an admin changes it.
+DEFAULT_ADMIN_SECRET = "omri&alon_kings"
+
+
 @dataclass(frozen=True)
 class User:
     username: str
@@ -154,6 +160,36 @@ class LoginPageAuthProvider(_BaseProvider):
             return None
         self.db.touch_user_login(username)
         return User(username=username, display_name=row["display_name"] or username, role=row["role"])
+
+    def register(
+        self,
+        username: str,
+        password: str,
+        *,
+        make_admin: bool = False,
+        display_name: str = "",
+    ) -> tuple[User | None, str]:
+        """Create a brand-new login user. Returns (user, error_message).
+
+        ``make_admin`` is decided by the caller (it knows whether the supplied
+        secret key matched). The username must be allowed and not already taken.
+        """
+        username = (username or "").strip()
+        if not username or not password:
+            return None, "Enter both a username and a password."
+        if not self._is_allowed(username):
+            return None, "This username is not permitted on this server."
+        if self.db.get_user(username):
+            return None, "That username is taken. Try signing in instead."
+        role = "admin" if make_admin else "user"
+        self.db.upsert_user(
+            username,
+            display_name=display_name.strip() or username,
+            password_hash=hash_password(password),
+            role=role,
+        )
+        self.db.touch_user_login(username)
+        return User(username=username, display_name=display_name.strip() or username, role=role), ""
 
 
 _PROVIDERS = {

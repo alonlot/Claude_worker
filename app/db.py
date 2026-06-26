@@ -122,6 +122,8 @@ CREATE TABLE IF NOT EXISTS skills (
     content TEXT NOT NULL DEFAULT '',
     category TEXT NOT NULL DEFAULT '',
     visibility TEXT NOT NULL DEFAULT 'private',
+    source_url TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -284,6 +286,7 @@ CREATE TABLE IF NOT EXISTS merge_requests (
     ci_suggestion TEXT NOT NULL DEFAULT '',
     ci_sig TEXT NOT NULL DEFAULT '',
     ci_suggestion_sig TEXT NOT NULL DEFAULT '',
+    ci_job_suggestions TEXT NOT NULL DEFAULT '',
     last_scanned_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -354,10 +357,22 @@ class Database:
         skill_columns = {row["name"] for row in conn.execute("PRAGMA table_info(skills)").fetchall()}
         if "category" not in skill_columns:
             conn.execute("ALTER TABLE skills ADD COLUMN category TEXT NOT NULL DEFAULT ''")
+        if "source_url" not in skill_columns:
+            conn.execute("ALTER TABLE skills ADD COLUMN source_url TEXT NOT NULL DEFAULT ''")
+        if "source_type" not in skill_columns:
+            conn.execute("ALTER TABLE skills ADD COLUMN source_type TEXT NOT NULL DEFAULT ''")
 
         cr_columns = {row["name"] for row in conn.execute("PRAGMA table_info(code_review_notes)").fetchall()}
         if "diff_hunk" not in cr_columns:
             conn.execute("ALTER TABLE code_review_notes ADD COLUMN diff_hunk TEXT NOT NULL DEFAULT ''")
+
+        mr_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='merge_requests'"
+        ).fetchone()
+        if mr_table:
+            mr_columns = {row["name"] for row in conn.execute("PRAGMA table_info(merge_requests)").fetchall()}
+            if "ci_job_suggestions" not in mr_columns:
+                conn.execute("ALTER TABLE merge_requests ADD COLUMN ci_job_suggestions TEXT NOT NULL DEFAULT ''")
 
         # Backfill the owner column on databases created before multi-user support.
         for table in SIMPLE_OWNED_TABLES:
@@ -438,8 +453,45 @@ class Database:
     def set_user_password(self, username: str, password_hash: str) -> None:
         self.execute("UPDATE users SET password_hash=? WHERE username=?", (password_hash, username))
 
+    def set_user_role(self, username: str, role: str) -> None:
+        role = "admin" if role == "admin" else "user"
+        self.execute("UPDATE users SET role=? WHERE username=?", (role, username))
+
+    def count_admins(self) -> int:
+        row = self.fetchone("SELECT COUNT(*) AS c FROM users WHERE role='admin'")
+        return int(row["c"]) if row else 0
+
+    def delete_user(self, username: str, purge_data: bool = False) -> None:
+        """Remove a login user. When purge_data, also drop everything they own.
+
+        The user row and their saved settings/likes always go. purge_data extends
+        the wipe to every owner-scoped table (runs, tickets, skills, ...), which is
+        how an admin fully removes a person and frees their data from the database.
+        """
+        self.execute("DELETE FROM users WHERE username=?", (username,))
+        self.execute("DELETE FROM user_configs WHERE username=?", (username,))
+        self.execute("DELETE FROM skill_likes WHERE username=?", (username,))
+        if not purge_data:
+            return
+        owned_tables = (
+            "queue_items", "runs", "ticket_plans", "code_review_notes", "notifications",
+            "tickets", "app_state", "skills", "skill_categories", "merge_requests",
+            "ide_comments",
+        )
+        for table in owned_tables:
+            self.execute(f"DELETE FROM {table} WHERE owner=?", (username,))
+
     def touch_user_login(self, username: str) -> None:
         self.execute("UPDATE users SET last_login_at=CURRENT_TIMESTAMP WHERE username=?", (username,))
+
+    # ----- admin settings (global, stored in app_state under DEFAULT_OWNER) ----
+
+    def get_admin_secret(self, default: str) -> str:
+        """The shared secret that promotes a self-service signup to admin."""
+        return self.get_state("admin_secret", "", owner=DEFAULT_OWNER) or default
+
+    def set_admin_secret(self, value: str) -> None:
+        self.set_state("admin_secret", value, owner=DEFAULT_OWNER)
 
     def get_user_config(self, username: str) -> dict[str, Any]:
         row = self.fetchone("SELECT data FROM user_configs WHERE username=?", (username,))
@@ -1028,6 +1080,8 @@ class Database:
         content: str = "",
         visibility: str = "private",
         category: str = "",
+        source_url: str = "",
+        source_type: str = "",
     ) -> int:
         visibility = "public" if visibility == "public" else "private"
         category = (category or "").strip()
@@ -1035,8 +1089,11 @@ class Database:
             self.create_category(owner, category)
         with self.connect() as conn:
             cur = conn.execute(
-                "INSERT INTO skills(owner, name, description, content, category, visibility) VALUES (?, ?, ?, ?, ?, ?)",
-                (owner, name, description, content, category, visibility),
+                """
+                INSERT INTO skills(owner, name, description, content, category, visibility, source_url, source_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (owner, name, description, content, category, visibility, source_url, source_type),
             )
             conn.commit()
             return int(cur.lastrowid)
@@ -1050,6 +1107,8 @@ class Database:
         content: str,
         visibility: str,
         category: str = "",
+        source_url: str | None = None,
+        source_type: str | None = None,
     ) -> bool:
         visibility = "public" if visibility == "public" else "private"
         category = (category or "").strip()
@@ -1065,6 +1124,11 @@ class Database:
             """,
             (name, description, content, category, visibility, skill_id, owner),
         )
+        # source fields are optional on update so plain edits don't wipe them.
+        if source_url is not None:
+            self.execute("UPDATE skills SET source_url=? WHERE id=? AND owner=?", (source_url, skill_id, owner))
+        if source_type is not None:
+            self.execute("UPDATE skills SET source_type=? WHERE id=? AND owner=?", (source_type, skill_id, owner))
         return True
 
     # ----- skill categories ----------------------------------------------

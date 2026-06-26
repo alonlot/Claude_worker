@@ -20,6 +20,20 @@
         <label>Password <input name="password" type="password" autocomplete="current-password"></label>
         <button>Sign in</button>
       </form>
+
+      <details class="signup-details">
+        <summary>Create an account</summary>
+        <form method="post" action="/signup" class="settings-form">
+          <label>Username <input name="username" autocomplete="username"></label>
+          <label>Display name <input name="display_name" autocomplete="name"></label>
+          <label>Password <input name="password" type="password" autocomplete="new-password"></label>
+          <label>Secret key (optional)
+            <input name="secret_key" type="password" placeholder="Enter the admin secret key to create an admin">
+          </label>
+          <p class="field-hint">Leave the secret key blank to create a regular account. The correct secret key creates an admin.</p>
+          <button>Create account</button>
+        </form>
+      </details>
       {% else %}
       <p>
         This server authenticates through your organization's single sign-on

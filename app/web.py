@@ -20,7 +20,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.auth import LoginPageAuthProvider, User, get_auth_provider
+from app.auth import (
+    DEFAULT_ADMIN_SECRET,
+    LoginPageAuthProvider,
+    User,
+    get_auth_provider,
+    hash_password,
+)
 from app.config import (
     Config,
     DEFAULT_OWNER,
@@ -38,6 +44,7 @@ from app.code_review import (
     suggest_review_url,
 )
 from app import merge_requests as mrlib
+from app.confluence import ConfluenceClient
 from app.db import Database
 from app.jira_client import JiraClient
 from app import notify
@@ -50,7 +57,7 @@ from app.utils import ensure_child_path
 templates = Jinja2Templates(directory="app/templates")
 
 # Paths reachable without authentication.
-PUBLIC_PATHS = {"/login", "/logout", "/healthz"}
+PUBLIC_PATHS = {"/login", "/signup", "/logout", "/healthz"}
 
 
 def create_app(config: Config, db: Database) -> FastAPI:
@@ -165,6 +172,34 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 return RedirectResponse("/login", status_code=303)
             request.session["user"] = user.username
             return RedirectResponse("/", status_code=303)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/signup")
+    async def signup_submit(
+        request: Request,
+        username: str = Form(""),
+        password: str = Form(""),
+        display_name: str = Form(""),
+        secret_key: str = Form(""),
+    ):
+        prov = request.app.state.provider
+        if not isinstance(prov, LoginPageAuthProvider):
+            request.app.state.flash = "Accounts are managed by your SSO provider on this server."
+            return RedirectResponse("/login", status_code=303)
+        admin_secret = db.get_admin_secret(DEFAULT_ADMIN_SECRET)
+        provided = secret_key.strip()
+        make_admin = bool(provided) and provided == admin_secret
+        user, error = prov.register(username, password, make_admin=make_admin, display_name=display_name)
+        if not user:
+            request.app.state.flash = error
+            return RedirectResponse("/login", status_code=303)
+        request.session["user"] = user.username
+        if make_admin:
+            request.app.state.flash = f"Welcome, {user.display_name} — you were created as an admin."
+        elif provided:
+            request.app.state.flash = "Account created. The secret key was incorrect, so you are a regular user."
+        else:
+            request.app.state.flash = f"Welcome, {user.display_name}."
         return RedirectResponse("/", status_code=303)
 
     @app.post("/logout")
@@ -870,11 +905,135 @@ def create_app(config: Config, db: Database) -> FastAPI:
             },
         )
 
+    # ---------------- admin ----------------
+
+    def require_admin(request: Request) -> bool:
+        return current_user(request).is_admin
+
+    @app.get("/admin", response_class=HTMLResponse)
+    async def admin_page(request: Request):
+        if not require_admin(request):
+            request.app.state.flash = "Admin access required."
+            return RedirectResponse("/", status_code=303)
+        return templates.TemplateResponse(
+            request,
+            "admin.html",
+            {
+                "request": request,
+                "title": registry.user_config(owner_of(request)).ui.title,
+                "user": current_user(request),
+                "flash": pop_flash(request),
+                **admin_overview(db, request.app.state.config),
+            },
+        )
+
+    @app.post("/admin/users/create")
+    async def admin_create_user(
+        request: Request,
+        username: str = Form(""),
+        password: str = Form(""),
+        display_name: str = Form(""),
+        role: str = Form("user"),
+    ):
+        if not require_admin(request):
+            return RedirectResponse("/", status_code=303)
+        username = username.strip()
+        if not username or not password:
+            request.app.state.flash = "Username and password are required to create a user."
+            return RedirectResponse("/admin", status_code=303)
+        if db.get_user(username):
+            request.app.state.flash = f"User '{username}' already exists."
+            return RedirectResponse("/admin", status_code=303)
+        db.upsert_user(
+            username,
+            display_name=display_name.strip() or username,
+            password_hash=hash_password(password),
+            role="admin" if role == "admin" else "user",
+        )
+        request.app.state.flash = f"Created user '{username}'."
+        return RedirectResponse("/admin", status_code=303)
+
+    @app.post("/admin/users/{username}/role")
+    async def admin_set_role(username: str, request: Request, role: str = Form("user")):
+        actor = current_user(request)
+        if not actor.is_admin:
+            return RedirectResponse("/", status_code=303)
+        if not db.get_user(username):
+            request.app.state.flash = "User not found."
+            return RedirectResponse("/admin", status_code=303)
+        if username == actor.username and role != "admin":
+            request.app.state.flash = "You cannot remove your own admin role."
+            return RedirectResponse("/admin", status_code=303)
+        if role != "admin" and db.get_user(username)["role"] == "admin" and db.count_admins() <= 1:
+            request.app.state.flash = "Cannot demote the last admin."
+            return RedirectResponse("/admin", status_code=303)
+        db.set_user_role(username, role)
+        request.app.state.flash = f"{username} is now {'an admin' if role == 'admin' else 'a regular user'}."
+        return RedirectResponse("/admin", status_code=303)
+
+    @app.post("/admin/users/{username}/password")
+    async def admin_reset_password(username: str, request: Request, new_password: str = Form("")):
+        if not require_admin(request):
+            return RedirectResponse("/", status_code=303)
+        if not new_password.strip():
+            request.app.state.flash = "Enter a new password."
+            return RedirectResponse("/admin", status_code=303)
+        if not db.get_user(username):
+            request.app.state.flash = "User not found."
+            return RedirectResponse("/admin", status_code=303)
+        db.set_user_password(username, hash_password(new_password))
+        request.app.state.flash = f"Password reset for {username}."
+        return RedirectResponse("/admin", status_code=303)
+
+    @app.post("/admin/users/{username}/delete")
+    async def admin_delete_user(username: str, request: Request, purge_data: str | None = Form(None)):
+        actor = current_user(request)
+        if not actor.is_admin:
+            return RedirectResponse("/", status_code=303)
+        if username == actor.username:
+            request.app.state.flash = "You cannot delete your own account."
+            return RedirectResponse("/admin", status_code=303)
+        if not db.get_user(username):
+            request.app.state.flash = "User not found."
+            return RedirectResponse("/admin", status_code=303)
+        purge = purge_data == "on"
+        db.delete_user(username, purge_data=purge)
+        workspace = Path(request.app.state.config.app.workspace_dir) / username
+        if workspace.exists():
+            shutil.rmtree(workspace, ignore_errors=True)
+        request.app.state.flash = (
+            f"Deleted user {username}" + (" and purged their data." if purge else ".")
+        )
+        return RedirectResponse("/admin", status_code=303)
+
+    @app.post("/admin/secret")
+    async def admin_set_secret(request: Request, admin_secret: str = Form("")):
+        if not require_admin(request):
+            return RedirectResponse("/", status_code=303)
+        value = admin_secret.strip()
+        if not value:
+            request.app.state.flash = "The admin secret key cannot be empty."
+            return RedirectResponse("/admin", status_code=303)
+        db.set_admin_secret(value)
+        request.app.state.flash = "Admin secret key updated."
+        return RedirectResponse("/admin", status_code=303)
+
     # ---------------- merge requests tab ----------------
 
     def mr_view(row) -> dict:
-        """Shape a merge_requests row for templates (parse CI, compute health)."""
+        """Shape a merge_requests row for templates (parse CI, compute health,
+        attach the per-job AI fix suggestion)."""
         ci_jobs = mrlib.parse_ci_jobs(row["ci_jobs"])
+        try:
+            job_fixes = json.loads(row["ci_job_suggestions"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            job_fixes = {}
+        if not isinstance(job_fixes, dict):
+            job_fixes = {}
+        for job in ci_jobs:
+            entry = job_fixes.get(job["name"])
+            job["is_failed"] = bool(mrlib._job_tokens(job) & mrlib.FAILED_CI)
+            job["suggestion"] = entry.get("text", "") if isinstance(entry, dict) else ""
         return {
             "id": row["id"],
             "url": row["url"],
@@ -889,7 +1048,6 @@ def create_app(config: Config, db: Database) -> FastAPI:
             "ci_jobs": ci_jobs,
             "ci_status": mrlib.ci_overall(ci_jobs),
             "ci_failed_jobs": mrlib.failed_ci_jobs(ci_jobs),
-            "ci_suggestion": row["ci_suggestion"],
             "last_scanned_at": row["last_scanned_at"],
         }
 
@@ -937,8 +1095,22 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "flash": pop_flash(request),
                 "mrs": [mr_view(row) for row in rows],
                 "gitlab_configured": bool(gitlab_auth_for(request_config()).auth_token()),
+                "skills": db.list_skills(owner),
+                "ci_skill_ids": set(mrlib.selected_skill_ids(db, owner, "ci")),
+                "cr_skill_ids": set(mrlib.selected_skill_ids(db, owner, "cr")),
             },
         )
+
+    @app.post("/merge-requests/skills")
+    async def merge_requests_save_skills(
+        request: Request, ci_skill_ids: list[int] = Form(default=[]), cr_skill_ids: list[int] = Form(default=[])
+    ):
+        owner = owner_of(request)
+        owned = {int(s["id"]) for s in db.list_skills(owner)}
+        db.set_state("mr_skills:ci", json.dumps([s for s in ci_skill_ids if s in owned]), owner=owner)
+        db.set_state("mr_skills:cr", json.dumps([s for s in cr_skill_ids if s in owned]), owner=owner)
+        request.app.state.flash = "Saved skills the AI uses for CI and CR."
+        return RedirectResponse("/merge-requests", status_code=303)
 
     @app.post("/merge-requests/refresh")
     async def merge_requests_refresh(request: Request):
@@ -1187,6 +1359,30 @@ def create_app(config: Config, db: Database) -> FastAPI:
             request.app.state.flash = f"Skill '{name.strip()}' created."
         return RedirectResponse("/skills", status_code=303)
 
+    @app.post("/skills/from-confluence")
+    async def create_skill_from_confluence(
+        request: Request, source_url: str = Form(""), category: str = Form(""), visibility: str = Form("private")
+    ):
+        owner = owner_of(request)
+        cfg = registry.user_config(owner)
+        try:
+            page = await ConfluenceClient(cfg.confluence, cfg.jira).fetch_page(source_url)
+        except Exception as exc:  # noqa: BLE001 - surface auth/HTTP/parse errors to the user
+            request.app.state.flash = f"Confluence import failed: {exc}"
+            return RedirectResponse("/skills", status_code=303)
+        db.create_skill(
+            owner,
+            page.title,
+            description=f"Imported from Confluence: {page.title}",
+            content=page.text,
+            visibility=visibility,
+            category=(category.strip() or "Confluence"),
+            source_url=page.url,
+            source_type="confluence",
+        )
+        request.app.state.flash = f"Imported '{page.title}' from Confluence."
+        return RedirectResponse("/skills", status_code=303)
+
     @app.post("/skills/{skill_id}/update")
     async def update_skill(
         skill_id: int,
@@ -1408,6 +1604,9 @@ def create_app(config: Config, db: Database) -> FastAPI:
         test_gate_enabled: str | None = Form(None),
         test_gate_command: str = Form(""),
         test_gate_timeout_seconds: int = Form(1800),
+        confluence_base_url: str = Form(""),
+        confluence_email: str = Form(""),
+        confluence_token: str = Form(""),
     ):
         owner = owner_of(request)
         try:
@@ -1468,6 +1667,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     "enabled": test_gate_enabled == "on",
                     "command": test_gate_command,
                     "timeout_seconds": test_gate_timeout_seconds,
+                },
+                "confluence": {
+                    "base_url": confluence_base_url,
+                    "email": confluence_email,
+                    "token": confluence_token,
                 },
             }
             db.set_user_config(owner, sections)
@@ -1965,6 +2169,94 @@ def run_stats(db: Database, owner: str) -> dict:
         "series": series,
         "max_count": max_count,
         "recent": recent,
+    }
+
+
+def _dir_size(path: Path) -> int:
+    """Total bytes of every file under a directory (0 if it does not exist)."""
+    if not path.exists():
+        return 0
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _bytes_text(num_bytes: int) -> str:
+    size = float(max(0, num_bytes))
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def admin_overview(db: Database, config: Config) -> dict:
+    """Aggregate every user with their run/queue/disk stats for the admin page."""
+    runs_by_owner: dict[str, dict[str, int]] = {}
+    for row in db.fetchall("SELECT owner, state, COUNT(*) AS c FROM runs GROUP BY owner, state"):
+        runs_by_owner.setdefault(row["owner"], {})[row["state"]] = int(row["c"])
+
+    def _counts(table: str) -> dict[str, int]:
+        return {
+            row["owner"]: int(row["c"])
+            for row in db.fetchall(f"SELECT owner, COUNT(*) AS c FROM {table} GROUP BY owner")
+        }
+
+    queue_counts = _counts("queue_items")
+    ticket_counts = _counts("tickets")
+    skill_counts = _counts("skills")
+    mr_counts = _counts("merge_requests")
+
+    workspace_dir = Path(config.app.workspace_dir)
+    users: list[dict] = []
+    totals = {"runs": 0, "success": 0, "failed": 0, "active": 0, "disk": 0}
+    for user in db.list_users():
+        name = user["username"]
+        states = runs_by_owner.get(name, {})
+        total = sum(states.values())
+        success = states.get("done", 0) + states.get("pushed", 0)
+        failed = states.get("failed", 0) + states.get("cancelled", 0)
+        active = max(0, total - success - failed)
+        disk = _dir_size(workspace_dir / name)
+        totals["runs"] += total
+        totals["success"] += success
+        totals["failed"] += failed
+        totals["active"] += active
+        totals["disk"] += disk
+        users.append(
+            {
+                "username": name,
+                "display_name": user["display_name"] or name,
+                "role": user["role"],
+                "created_at": user["created_at"],
+                "last_login_at": user["last_login_at"] or "",
+                "runs": total,
+                "success": success,
+                "failed": failed,
+                "active": active,
+                "success_rate": round(100 * success / total) if total else 0,
+                "queue": queue_counts.get(name, 0),
+                "tickets": ticket_counts.get(name, 0),
+                "skills": skill_counts.get(name, 0),
+                "merge_requests": mr_counts.get(name, 0),
+                "disk": disk,
+                "disk_text": _bytes_text(disk),
+            }
+        )
+    users.sort(key=lambda u: (u["role"] != "admin", -u["runs"], u["username"].lower()))
+    return {
+        "users": users,
+        "user_count": len(users),
+        "admin_count": sum(1 for u in users if u["role"] == "admin"),
+        "totals": totals,
+        "total_disk_text": _bytes_text(totals["disk"]),
+        "admin_secret": db.get_admin_secret(DEFAULT_ADMIN_SECRET),
+        "workspace_dir": str(workspace_dir),
     }
 
 

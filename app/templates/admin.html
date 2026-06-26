@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="section-title">
+    <h2>Admin</h2>
+    <p>Every user, their activity, and disk usage. Full control of accounts lives here.</p>
+  </div>
+
+  <div class="stat-cards">
+    <article class="stat-card"><span class="stat-num">{{ user_count }}</span><span class="stat-label">Users</span></article>
+    <article class="stat-card"><span class="stat-num">{{ admin_count }}</span><span class="stat-label">Admins</span></article>
+    <article class="stat-card"><span class="stat-num">{{ totals.runs }}</span><span class="stat-label">Total runs</span></article>
+    <article class="stat-card ok"><span class="stat-num">{{ totals.success }}</span><span class="stat-label">Succeeded</span></article>
+    <article class="stat-card bad"><span class="stat-num">{{ totals.failed }}</span><span class="stat-label">Failed / cancelled</span></article>
+    <article class="stat-card"><span class="stat-num">{{ totals.active }}</span><span class="stat-label">Active</span></article>
+    <article class="stat-card"><span class="stat-num">{{ total_disk_text }}</span><span class="stat-label">Disk used</span></article>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Users</h2>
+  <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Role</th>
+          <th>Runs</th>
+          <th>Success</th>
+          <th>Failed</th>
+          <th>Active</th>
+          <th>Queue</th>
+          <th>Tickets</th>
+          <th>Skills</th>
+          <th>MRs</th>
+          <th>Disk</th>
+          <th>Last login</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td>
+            <strong>{{ u.display_name }}</strong><br>
+            <small>{{ u.username }}</small>
+          </td>
+          <td>
+            {% if u.role == "admin" %}<span class="pill">admin</span>{% else %}<span class="pill warn">user</span>{% endif %}
+          </td>
+          <td>{{ u.runs }}</td>
+          <td>{{ u.success }} <small>({{ u.success_rate }}%)</small></td>
+          <td>{{ u.failed }}</td>
+          <td>{{ u.active }}</td>
+          <td>{{ u.queue }}</td>
+          <td>{{ u.tickets }}</td>
+          <td>{{ u.skills }}</td>
+          <td>{{ u.merge_requests }}</td>
+          <td>{{ u.disk_text }}</td>
+          <td><small>{{ u.last_login_at or "never" }}</small></td>
+          <td>
+            <div class="admin-actions">
+              {% if u.role == "admin" %}
+              <form method="post" action="/admin/users/{{ u.username }}/role">
+                <input type="hidden" name="role" value="user">
+                <button class="secondary" {% if u.username == user.username %}disabled title="You cannot demote yourself"{% endif %}>Make user</button>
+              </form>
+              {% else %}
+              <form method="post" action="/admin/users/{{ u.username }}/role">
+                <input type="hidden" name="role" value="admin">
+                <button class="secondary">Make admin</button>
+              </form>
+              {% endif %}
+
+              <form method="post" action="/admin/users/{{ u.username }}/password" class="inline-form">
+                <input name="new_password" type="password" placeholder="New password" required>
+                <button class="secondary">Reset</button>
+              </form>
+
+              <form method="post" action="/admin/users/{{ u.username }}/delete"
+                    onsubmit="return confirm('Delete user {{ u.username }}? This also removes their workspace.');">
+                <label class="check"><input type="checkbox" name="purge_data"> purge data</label>
+                <button class="danger" {% if u.username == user.username %}disabled title="You cannot delete yourself"{% endif %}>Delete</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="13" class="empty">No users yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="grid">
+  <div class="panel">
+    <div class="section-title">
+      <h2>Create a user</h2>
+      <p>Add an account directly without the signup form.</p>
+    </div>
+    <form method="post" action="/admin/users/create" class="settings-form">
+      <label>Username <input name="username" required></label>
+      <label>Display name <input name="display_name"></label>
+      <label>Password <input name="password" type="password" required></label>
+      <label>Role
+        <select name="role">
+          <option value="user">User</option>
+          <option value="admin">Admin</option>
+        </select>
+      </label>
+      <button>Create user</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">
+      <h2>Admin secret key</h2>
+      <p>Anyone who enters this key on the signup form is created as an admin.</p>
+    </div>
+    <form method="post" action="/admin/secret" class="settings-form">
+      <label>Secret key <input name="admin_secret" value="{{ admin_secret }}" required></label>
+      <button>Update secret key</button>
+    </form>
+    <p class="field-hint">Workspaces live under <code>{{ workspace_dir }}</code>. Disk usage above is each user's clone folder.</p>
+  </div>
+</section>
+{% endblock %}

@@ -1428,3 +1428,14 @@ pre.diff .diff-ctx { color: #c9d1d9; }
 }
 .ai-chip { background: #7c4dff; color: #fff; }
 .you-chip { background: #1a7f37; color: #fff; }
+
+/* ---- Admin page ---- */
+.table-scroll { overflow-x: auto; }
+.admin-actions { display: flex; flex-direction: column; gap: 6px; min-width: 200px; }
+.admin-actions form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.admin-actions .inline-form input { width: 130px; }
+.admin-actions button { padding: 4px 10px; font-size: 12px; }
+.admin-actions .check { font-size: 11px; color: var(--muted); margin: 0; }
+.signup-details { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.signup-details summary { cursor: pointer; font-weight: 700; color: var(--muted); }
+.signup-details .settings-form { margin-top: 12px; }

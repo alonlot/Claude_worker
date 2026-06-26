@@ -21,6 +21,7 @@
       <a href="/merge-requests">Merge Requests</a>
       <a href="/skills">Skills</a>
       <a href="/stats">Stats</a>
+      {% if user and user.is_admin %}<a href="/admin">Admin</a>{% endif %}
       <a href="/settings">Settings</a>
       {% if user %}
       <span class="nav-user" title="Signed in as {{ user.username }}{% if user.is_admin %} (admin){% endif %}">
