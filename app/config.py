@@ -17,7 +17,7 @@ DEFAULT_OWNER = "local"
 
 # Config sections that are stored per user (editable on the per-user Settings page).
 # Everything else (app, auth, docker) is server-level and only an admin edits it.
-USER_SECTIONS = ("jira", "git", "claude", "ui", "delivery", "notify", "test_gate")
+USER_SECTIONS = ("jira", "git", "claude", "ui", "delivery", "notify", "test_gate", "confluence")
 
 
 class IndentedSafeDumper(yaml.SafeDumper):
@@ -129,6 +129,19 @@ class TestGateConfig:
 
 
 @dataclass
+class ConfluenceConfig:
+    """Read Confluence pages to turn them into reusable skills.
+
+    base_url is the wiki base, e.g. "https://yourco.atlassian.net/wiki". email
+    and token are the Atlassian credentials; empty falls back to the Jira ones
+    (same Atlassian account/API token works for both products).
+    """
+    base_url: str = ""
+    email: str = ""
+    token: str = ""
+
+
+@dataclass
 class UiConfig:
     title: str = "Jira Claude Worker"
 
@@ -184,6 +197,7 @@ class Config:
     delivery: DeliveryConfig = field(default_factory=DeliveryConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     test_gate: TestGateConfig = field(default_factory=TestGateConfig)
+    confluence: ConfluenceConfig = field(default_factory=ConfluenceConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
     docker: DockerConfig = field(default_factory=DockerConfig)
 
@@ -233,6 +247,7 @@ def _config_from_data(raw: dict[str, Any]) -> Config:
         delivery=_config_section(DeliveryConfig, raw, "delivery"),
         notify=_config_section(NotifyConfig, raw, "notify"),
         test_gate=_config_section(TestGateConfig, raw, "test_gate"),
+        confluence=_config_section(ConfluenceConfig, raw, "confluence"),
         auth=_config_section(AuthConfig, raw, "auth"),
         docker=_config_section(DockerConfig, raw, "docker"),
     )
@@ -264,6 +279,7 @@ def apply_user_sections(base: Config, sections: dict[str, Any] | None) -> Config
         "delivery": _section_to_dict(base.delivery),
         "notify": _section_to_dict(base.notify),
         "test_gate": _section_to_dict(base.test_gate),
+        "confluence": _section_to_dict(base.confluence),
     }
     for name in USER_SECTIONS:
         incoming = (sections or {}).get(name)
@@ -312,6 +328,7 @@ def secret_values(config: Config) -> list[str]:
             config.git.gitlab_token,
             config.claude.api_key,
             config.notify.smtp_password,
+            config.confluence.token,
         ]
         if value and len(value) >= 4
     ]

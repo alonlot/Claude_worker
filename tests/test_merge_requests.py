@@ -36,6 +36,29 @@ def test_signature_is_stable_and_sensitive():
     assert a != mr.signature("hello", 2)
 
 
+def test_parse_ci_job_suggestions():
+    out = mr.parse_ci_job_suggestions('{"suggestions": [{"job": "unit", "fix": "pin dep"}]}')
+    assert out == {"unit": "pin dep"}
+
+
+def test_ci_job_signature_changes_with_outcome():
+    a = {"name": "unit", "status": "failed", "conclusion": "failed", "summary": "2 failed"}
+    b = {"name": "unit", "status": "failed", "conclusion": "failed", "summary": "3 failed"}
+    assert mr.ci_job_signature(a) != mr.ci_job_signature(b)
+    assert mr.ci_job_signature(a) == mr.ci_job_signature(dict(a))
+
+
+def test_skills_block_builds_from_selection(tmp_path):
+    db = _db(tmp_path)
+    sid = db.create_skill("local", "CI rules", content="The lint job uses ruff.")
+    assert mr.skills_block(db, "local", "ci") == ""  # nothing selected yet
+    db.set_state("mr_skills:ci", '[%d]' % sid, owner="local")
+    block = mr.skills_block(db, "local", "ci")
+    assert "CI rules" in block and "ruff" in block
+    assert "custom jobs" in block  # CI-flavored intro
+    assert mr.skills_block(db, "local", "cr") == ""  # CR selection independent
+
+
 def test_parse_cr_suggestions():
     out = mr.parse_cr_suggestions(
         'noise {"suggestions": [{"note_id": 7, "fix": "rename x", "reply": "Done, renamed."}]} tail'

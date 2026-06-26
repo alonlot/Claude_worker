@@ -1429,6 +1429,15 @@ pre.diff .diff-ctx { color: #c9d1d9; }
 .ai-chip { background: #7c4dff; color: #fff; }
 .you-chip { background: #1a7f37; color: #fff; }
 
+/* MR skills selector + skill source links */
+.mr-skills-panel > summary { cursor: pointer; font-weight: 700; }
+.mr-skill-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 8px 0; }
+.mr-skill-cols fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.mr-skill-cols legend { font-weight: 700; font-size: 13px; padding: 0 6px; }
+.mr-skill-cols .check { display: flex; gap: 6px; align-items: center; margin: 2px 0; }
+@media (max-width: 900px) { .mr-skill-cols { grid-template-columns: 1fr; } }
+.skill-source { display: block; color: var(--muted); }
+
 /* ---- Admin page ---- */
 .table-scroll { overflow-x: auto; }
 .admin-actions { display: flex; flex-direction: column; gap: 6px; min-width: 200px; }

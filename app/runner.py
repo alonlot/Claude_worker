@@ -24,13 +24,16 @@ from app.config import Config, DEFAULT_OWNER, apply_user_sections, secret_values
 from app.code_review import create_merge_request, gitlab_auth_for, post_review_reply
 from app.merge_requests import (
     ci_failed,
-    ci_suggestion_prompt,
+    ci_job_signature,
+    ci_jobs_suggestion_prompt,
     cr_suggestion_prompt,
     failed_ci_jobs,
+    parse_ci_job_suggestions,
     parse_ci_jobs as mr_parse_ci_jobs,
     parse_cr_suggestions,
     render_ci_context as mr_render_ci_context,
     signature as mr_signature,
+    skills_block as mr_skills_block,
 )
 from app.db import Database
 from app.git_ops import GitOps
@@ -695,20 +698,35 @@ Tasks:
             return
         runner = self._runner(None, lambda phase, line: None)
 
+        # --- Per-failed-job CI fix suggestions (kept fresh per job signature) ---
         ci_jobs = mr_parse_ci_jobs(mr_row["ci_jobs"])
-        ci_sig = mr_row["ci_sig"] or ""
-        if ci_failed(ci_jobs) and ci_sig and ci_sig != (mr_row["ci_suggestion_sig"] or ""):
-            context = mr_render_ci_context(failed_ci_jobs(ci_jobs))
+        failed = failed_ci_jobs(ci_jobs)
+        if failed:
             try:
-                note = await runner.run_prompt(
-                    "mr-ci-suggest", ci_suggestion_prompt(mr_row["title"] or mr_row["url"], context)
-                )
-                self.db.update_merge_request(mr_id, ci_suggestion=note.strip(), ci_suggestion_sig=ci_sig)
-            except Exception as exc:  # noqa: BLE001 - advice is best-effort
-                self.db.update_merge_request(
-                    mr_id, ci_suggestion=f"(Could not generate a CI suggestion: {exc})", ci_suggestion_sig=ci_sig
-                )
+                stored = json.loads(mr_row["ci_job_suggestions"] or "{}")
+                if not isinstance(stored, dict):
+                    stored = {}
+            except json.JSONDecodeError:
+                stored = {}
+            stale = [job for job in failed if stored.get(job["name"], {}).get("sig") != ci_job_signature(job)]
+            if stale:
+                ci_skills = mr_skills_block(self.db, self.owner, "ci")
+                try:
+                    output = await runner.run_prompt(
+                        "mr-ci-suggest",
+                        ci_jobs_suggestion_prompt(mr_row["title"] or mr_row["url"], stale, ci_skills),
+                    )
+                    fixes = parse_ci_job_suggestions(output)
+                except Exception as exc:  # noqa: BLE001 - advice is best-effort
+                    fixes = {job["name"]: f"(Could not generate a suggestion: {exc})" for job in stale}
+                for job in stale:
+                    stored[job["name"]] = {
+                        "sig": ci_job_signature(job),
+                        "text": fixes.get(job["name"], ""),
+                    }
+                self.db.update_merge_request(mr_id, ci_job_suggestions=json.dumps(stored))
 
+        # --- Per-note CR fix + suggested reply ---
         pending: list[tuple[Any, str]] = []
         for note in self.db.open_mr_notes(mr_id):
             body_sig = mr_signature(note["body"])
@@ -716,8 +734,9 @@ Tasks:
                 pending.append((note, body_sig))
         if pending:
             note_dicts = [dict(note) for note, _ in pending]
+            cr_skills = mr_skills_block(self.db, self.owner, "cr")
             try:
-                output = await runner.run_prompt("mr-cr-suggest", cr_suggestion_prompt(note_dicts))
+                output = await runner.run_prompt("mr-cr-suggest", cr_suggestion_prompt(note_dicts, cr_skills))
                 parsed = parse_cr_suggestions(output)
             except Exception:  # noqa: BLE001
                 parsed = {}
@@ -780,7 +799,7 @@ Tasks:
                     prompt = f"""
 You are fixing CI failures on merge request {mr_row['url']} (branch {source_branch}).
 Do not run git commands. Python owns all Git interactions.
-
+{mr_skills_block(self.db, self.owner, "ci")}
 CI output:
 {ci_context}
 
@@ -788,6 +807,7 @@ Additional user instructions:
 {user_notes}
 
 Identify the failing checks and apply focused code/config fixes in this repository.
+Use any project-specific CI knowledge above to interpret custom jobs.
 If the CI output is incomplete, make the safest likely fix and explain assumptions in plain text.
 """
                     commit_message = f"{ticket_key}: Fix CI"
@@ -800,10 +820,11 @@ If the CI output is incomplete, make the safest likely fix and explain assumptio
                     prompt = f"""
 You are addressing code review notes on merge request {mr_row['url']} (branch {source_branch}).
 Do not run git commands. Python owns all Git interactions.
-
+{mr_skills_block(self.db, self.owner, "cr")}
 For each review note: read the CODE FROM GIT hunk and the referenced file, fix the code when the
 note is actionable, and write a first-person reply to post back to the reviewer. If a note is a
-question or incorrect, answer honestly without inventing certainty. Do not resolve threads.
+question or incorrect, answer honestly without inventing certainty. Follow the code conventions
+above. Do not resolve threads.
 
 Additional user instructions:
 {user_notes}

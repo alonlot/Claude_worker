@@ -22,6 +22,14 @@
     </fieldset>
 
     <fieldset>
+      <legend>Confluence</legend>
+      <p class="field-hint">Import Confluence pages as skills. Leave email/token blank to reuse your Jira credentials.</p>
+      <label>Wiki base URL <input name="confluence_base_url" value="{{ config.confluence.base_url }}" placeholder="https://yourco.atlassian.net/wiki (blank = Jira URL + /wiki)"></label>
+      <label>Email <input name="confluence_email" value="{{ config.confluence.email }}" placeholder="blank = Jira email"></label>
+      <label>Token <input name="confluence_token" type="password" value="{{ config.confluence.token }}" placeholder="blank = Jira token"></label>
+    </fieldset>
+
+    <fieldset>
       <legend>Git</legend>
       <label>Username <input name="git_username" value="{{ config.git.username }}"></label>
       <label>Token <input name="git_token" type="password" value="{{ config.git.token }}"></label>

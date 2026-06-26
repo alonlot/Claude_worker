@@ -82,12 +82,14 @@ def test_detail_shows_ci_and_notes(tmp_path):
     db.update_merge_request(
         mr_id, ci_jobs=json.dumps([{"name": "test", "status": "failed", "conclusion": "failed"}]), ci_sig="s"
     )
-    db.update_merge_request(mr_id, ci_suggestion="Pin the dependency.", ci_suggestion_sig="s")
+    db.update_merge_request(
+        mr_id, ci_job_suggestions=json.dumps({"test": {"sig": "x", "text": "Pin the dependency."}})
+    )
     db.upsert_mr_note(mr_id, {"external_id": "d:1", "kind": "review", "author": "rev", "body": "rename x"})
     client = TestClient(create_app(config, db))
     page = client.get(f"/merge-requests/{mr_id}")
     assert "CI overview" in page.text
-    assert "Pin the dependency." in page.text
+    assert "Pin the dependency." in page.text  # per-job fix shown on the failed job
     assert "rename x" in page.text
     assert "Fix CI" in page.text and "Fix CR" in page.text
 
@@ -155,6 +157,23 @@ def test_fix_ci_route_spawns(tmp_path, monkeypatch):
     client = TestClient(create_app(config, db))
     resp = client.post(f"/merge-requests/{mr_id}/fix-ci", data={"user_notes": "x"}, follow_redirects=False)
     assert resp.status_code == 303
+
+
+def test_save_mr_skills_route(tmp_path):
+    config, db = _setup(tmp_path)
+    ci_skill = db.create_skill("local", "CI", content="x")
+    cr_skill = db.create_skill("local", "CR", content="y")
+    client = TestClient(create_app(config, db))
+    resp = client.post(
+        "/merge-requests/skills",
+        data={"ci_skill_ids": [ci_skill], "cr_skill_ids": [cr_skill]},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert mrlib.selected_skill_ids(db, "local", "ci") == [ci_skill]
+    assert mrlib.selected_skill_ids(db, "local", "cr") == [cr_skill]
+    # the selector panel renders on the MR page
+    assert "Skills the AI uses" in client.get("/merge-requests").text
 
 
 def test_delete_route(tmp_path):
@@ -269,13 +288,13 @@ def test_generate_mr_suggestions(tmp_path, monkeypatch):
     config, db = _setup(tmp_path)
     mr_id = _seed_mr(db)
     db.update_merge_request(
-        mr_id, ci_jobs=json.dumps([{"name": "t", "status": "failed", "conclusion": "failed"}]), ci_sig="cisig"
+        mr_id, ci_jobs=json.dumps([{"name": "unit", "status": "failed", "conclusion": "failed"}]), ci_sig="cisig"
     )
     note_id = db.upsert_mr_note(mr_id, {"external_id": "d:1", "kind": "review", "author": "r", "body": "fix x"})
 
     async def fake_prompt(self, phase, prompt, cwd=None):
         if phase == "mr-ci-suggest":
-            return "Pin the broken dependency."
+            return json.dumps({"suggestions": [{"job": "unit", "fix": "Pin the broken dependency."}]})
         return json.dumps({"suggestions": [{"note_id": note_id, "fix": "rename", "reply": "Renamed, thanks."}]})
 
     monkeypatch.setattr("app.claude_runner.ClaudeRunner.run_prompt", fake_prompt)
@@ -283,8 +302,27 @@ def test_generate_mr_suggestions(tmp_path, monkeypatch):
     asyncio.run(worker.generate_mr_suggestions(mr_id))
 
     row = db.get_merge_request(mr_id)
-    assert "Pin the broken dependency." in row["ci_suggestion"]
-    assert row["ci_suggestion_sig"] == "cisig"
+    stored = json.loads(row["ci_job_suggestions"])
+    assert "Pin the broken dependency." in stored["unit"]["text"]
     note = db.fetchone("SELECT * FROM mr_notes WHERE id=?", (note_id,))
     assert note["suggestion"] == "rename"
     assert note["suggested_response"] == "Renamed, thanks."
+
+
+def test_generate_mr_suggestions_uses_selected_skills(tmp_path, monkeypatch):
+    config, db = _setup(tmp_path)
+    mr_id = _seed_mr(db)
+    db.update_merge_request(
+        mr_id, ci_jobs=json.dumps([{"name": "deploy", "status": "failed", "conclusion": "failed"}]), ci_sig="s"
+    )
+    skill_id = db.create_skill("local", "Custom CI", content="The deploy job needs DEPLOY_TOKEN set.")
+    db.set_state("mr_skills:ci", json.dumps([skill_id]), owner="local")
+    seen = {}
+
+    async def fake_prompt(self, phase, prompt, cwd=None):
+        seen["prompt"] = prompt
+        return json.dumps({"suggestions": [{"job": "deploy", "fix": "set the token"}]})
+
+    monkeypatch.setattr("app.claude_runner.ClaudeRunner.run_prompt", fake_prompt)
+    asyncio.run(Worker(config, db, "local").generate_mr_suggestions(mr_id))
+    assert "DEPLOY_TOKEN" in seen["prompt"]  # the selected CI skill was injected

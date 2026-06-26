@@ -24,6 +24,34 @@
 </section>
 
 <section class="panel">
+  <details class="mr-skills-panel">
+    <summary>Skills the AI uses for CI &amp; CR</summary>
+    <p class="field-hint">Pick skills so the AI understands your custom CI jobs and follows your code review conventions when it suggests fixes and replies. Create skills (including from Confluence) on the <a class="text-link" href="/skills">Skills</a> page.</p>
+    {% if skills %}
+    <form method="post" action="/merge-requests/skills">
+      <div class="mr-skill-cols">
+        <fieldset>
+          <legend>CI — understand custom jobs</legend>
+          {% for skill in skills %}
+          <label class="check"><input type="checkbox" name="ci_skill_ids" value="{{ skill.id }}" {% if skill.id in ci_skill_ids %}checked{% endif %}> {{ skill.name }}{% if skill.category %} <small>({{ skill.category }})</small>{% endif %}</label>
+          {% endfor %}
+        </fieldset>
+        <fieldset>
+          <legend>CR — code conventions</legend>
+          {% for skill in skills %}
+          <label class="check"><input type="checkbox" name="cr_skill_ids" value="{{ skill.id }}" {% if skill.id in cr_skill_ids %}checked{% endif %}> {{ skill.name }}{% if skill.category %} <small>({{ skill.category }})</small>{% endif %}</label>
+          {% endfor %}
+        </fieldset>
+      </div>
+      <button class="secondary" data-loading-text="Saving...">Save skills</button>
+    </form>
+    {% else %}
+    <p class="empty">No skills yet. Create some on the <a class="text-link" href="/skills">Skills</a> page first.</p>
+    {% endif %}
+  </details>
+</section>
+
+<section class="panel">
   <div class="panel-head">
     <h2>Tracked merge requests</h2>
     <span class="count-pill">{{ mrs|length }}</span>

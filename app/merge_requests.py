@@ -97,6 +97,33 @@ def render_ci_context(ci_jobs: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def selected_skill_ids(db: Any, owner: str, kind: str) -> list[int]:
+    """Skill ids the user picked to inform MR CI ('ci') or CR ('cr') prompts."""
+    raw = db.get_state(f"mr_skills:{kind}", "", owner=owner)
+    try:
+        data = json.loads(raw) if raw else []
+    except json.JSONDecodeError:
+        return []
+    return [int(x) for x in data if str(x).strip().lstrip("-").isdigit()]
+
+
+def skills_block(db: Any, owner: str, kind: str) -> str:
+    """Render the user's selected CI/CR skills as a prompt block (or '')."""
+    ids = selected_skill_ids(db, owner, kind)
+    if not ids:
+        return ""
+    skills = db.skills_by_ids(ids)
+    if not skills:
+        return ""
+    body = "\n\n".join(f"## Skill: {row['name']}\n{row['content']}" for row in skills)
+    intro = (
+        "Project-specific CI knowledge (custom jobs, pipelines) to apply:"
+        if kind == "ci"
+        else "Project-specific code review conventions to follow:"
+    )
+    return f"\n{intro}\n{body}\n"
+
+
 def signature(*parts: Any) -> str:
     """Stable short hash of the inputs, used to cache AI suggestions so they only
     regenerate when the underlying CI output / note text actually changes."""
@@ -242,23 +269,56 @@ def _now_iso() -> str:
 # AI-suggestion prompts + parsers (the Worker runs these against Claude)
 # --------------------------------------------------------------------------
 
-def ci_suggestion_prompt(mr_title: str, ci_context: str) -> str:
+def ci_job_signature(job: dict[str, Any]) -> str:
+    """Stable hash of a single CI job's identity + outcome, so a per-job fix
+    suggestion is only regenerated when that job's result actually changes."""
+    return signature(
+        job.get("name"), job.get("status"), job.get("conclusion"), job.get("summary")
+    )
+
+
+def ci_jobs_suggestion_prompt(mr_title: str, failed_jobs: list[dict[str, Any]], skills_block: str = "") -> str:
+    blocks = []
+    for job in failed_jobs:
+        blocks.append(
+            f"JOB {job.get('name')}: status={job.get('status', '')}, "
+            f"conclusion={job.get('conclusion', '')}, detail={job.get('summary', '')}"
+        )
+    joined = "\n".join(blocks)
     return f"""
-You are advising a developer on how to fix failing CI for a merge request.
-Merge request: {mr_title}
+You are advising a developer on how to fix failing CI jobs for merge request: {mr_title}.
+{skills_block}
+For EACH failing job below, write a short, concrete fix note (2-6 sentences, plain text,
+no code fences): name the most likely root cause and the specific steps/file areas to change,
+and flag anything needing human judgement. Use any project-specific CI knowledge above.
 
-Failing CI job output:
-{ci_context}
+Failing jobs:
+{joined}
 
-Write a short, concrete note (3-8 sentences, plain text, no code fences) that:
-- Names the most likely root cause of the failure.
-- Lists the specific steps or file areas to change to make CI pass.
-- Flags anything that needs human judgement.
-Return only the note text.
+Return ONLY JSON of the form:
+{{"suggestions": [{{"job": "job-name", "fix": "how to make this job pass"}}]}}
+Include one object for every JOB above, using the exact job name.
 """
 
 
-def cr_suggestion_prompt(notes: list[dict[str, Any]]) -> str:
+def parse_ci_job_suggestions(output: str) -> dict[str, str]:
+    match = re.search(r"\{.*\}", output or "", re.DOTALL)
+    if not match:
+        return {}
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return {}
+    out: dict[str, str] = {}
+    for item in data.get("suggestions", []) or []:
+        name = str(item.get("job") or "").strip()
+        fix = str(item.get("fix") or "").strip()
+        if name and fix:
+            out[name] = fix
+    return out
+
+
+def cr_suggestion_prompt(notes: list[dict[str, Any]], skills_block: str = "") -> str:
     blocks = []
     for note in notes:
         loc = f" ({note.get('file_path')}:{note.get('line')})" if note.get("file_path") else ""
@@ -271,7 +331,7 @@ def cr_suggestion_prompt(notes: list[dict[str, Any]]) -> str:
 You are helping a developer respond to code review notes on a merge request.
 For EACH note below, propose (a) how to address it in the code and (b) a polite,
 first-person reply the developer could post back to the reviewer.
-
+{skills_block}
 {joined}
 
 Return ONLY JSON of the form:

@@ -102,3 +102,10 @@ test_gate:
   enabled: false
   command: ""              # e.g. "pytest -q" or "npm test" (runs in the workspace)
   timeout_seconds: 1800
+
+# Confluence: import wiki pages as reusable skills. Leave email/token blank to
+# reuse the Jira credentials above (the same Atlassian API token works for both).
+confluence:
+  base_url: ""            # e.g. https://yourco.atlassian.net/wiki (blank = jira.url + /wiki)
+  email: ""              # blank = jira.email
+  token: ""              # blank = jira.token
