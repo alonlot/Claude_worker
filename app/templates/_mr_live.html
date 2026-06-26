@@ -2,87 +2,101 @@
      hx-get="/merge-requests/{{ mr.id }}/live"
      hx-trigger="every 3s"
      hx-swap="outerHTML">
+  <div class="mr-columns">
 
-  <section class="panel">
-    <div class="hero-head">
-      <div>
-        <h2>CI overview</h2>
-        <p>{% if mr.last_scanned_at %}Last scanned {{ mr.last_scanned_at }}{% else %}Not scanned yet — press Scan now.{% endif %}</p>
+    <section class="panel mr-col">
+      <div class="panel-head">
+        <h2>Review notes</h2>
+        <span class="count-pill">{{ mr.notes|length }}</span>
       </div>
-      <span class="ci-badge ci-{{ mr.ci_status }}">{{ mr.ci_status }}</span>
-    </div>
+      <div class="list">
+        {% for note in mr.notes %}
+        <article class="mr-note">
+          <div class="ticket-focus-head">
+            <strong>{{ note.author or "reviewer" }}</strong>
+            <span class="pill">{{ note.kind }}{% if note.state == 'responded' %} · responded{% endif %}</span>
+          </div>
+          {% if note.file_path %}<small>{{ note.file_path }}:{{ note.line }}</small>{% endif %}
+          <span class="mr-note-body">{{ note.body }}</span>
+          {% if note.diff_hunk %}
+          <details><summary>Code from git</summary><pre class="cr-hunk">{{ note.diff_hunk }}</pre></details>
+          {% endif %}
+          {% if note.html_url %}<small><a class="text-link" href="{{ note.html_url }}" target="_blank" rel="noopener noreferrer">Open note</a></small>{% endif %}
 
-    {% if mr.ci_status == 'failed' %}
-      {% if mr.ci_suggestion %}
-      <div class="ai-card">
-        <span class="ai-chip">AI suggests · how to fix CI</span>
-        <p>{{ mr.ci_suggestion }}</p>
-      </div>
-      {% else %}
-      <div class="ai-card pending"><span class="ai-chip">AI suggests</span><p>Generating a fix suggestion…</p></div>
-      {% endif %}
-    {% endif %}
+          {% if note.suggestion or note.suggested_response %}
+          <details class="ai-details" data-persist="mr-note-{{ note.id }}-ai">
+            <summary><span class="ai-chip">AI suggests</span> Show suggested fix &amp; reply</summary>
+            <div class="ai-card">
+              {% if note.suggestion %}<p><strong>Fix:</strong> {{ note.suggestion }}</p>{% endif %}
+              {% if note.suggested_response %}<p><strong>Reply:</strong> {{ note.suggested_response }}</p>{% endif %}
+            </div>
+          </details>
+          {% elif note.state != 'responded' %}
+          <div class="ai-card pending">
+            <span class="ai-chip">AI suggests</span><span class="spinner" aria-hidden="true"></span>
+            <span>Waiting for AI suggestion…</span>
+          </div>
+          {% endif %}
 
-    <div class="list compact-list">
-      {% for job in mr.ci_jobs %}
-      <article>
-        <div class="ticket-focus-head">
-          <strong>{{ job.name }}</strong>
-          <span class="ci-badge ci-{{ 'failed' if (job.status in ['failed','failure','error','canceled','cancelled'] or job.conclusion in ['failed','failure','error','canceled','cancelled']) else ('passed' if (job.status in ['success','passed'] or job.conclusion in ['success','passed']) else 'running') }}">
-            {{ job.status }}{% if job.conclusion and job.conclusion != job.status %} / {{ job.conclusion }}{% endif %}
-          </span>
-        </div>
-        {% if job.summary %}<span>{{ job.summary }}</span>{% endif %}
-        {% if job.details_url %}<small><a class="text-link" href="{{ job.details_url }}" target="_blank" rel="noopener noreferrer">Open job</a></small>{% endif %}
-      </article>
-      {% else %}
-      <p class="empty">No CI jobs scanned yet.</p>
-      {% endfor %}
-    </div>
-  </section>
-
-  <section class="panel">
-    <h2>Review notes</h2>
-    <div class="list">
-      {% for note in mr.notes %}
-      <article class="mr-note">
-        <div class="ticket-focus-head">
-          <strong>{{ note.author or "reviewer" }}</strong>
-          <span class="pill">{{ note.kind }}{% if note.state == 'responded' %} · responded{% endif %}</span>
-        </div>
-        {% if note.file_path %}<small>{{ note.file_path }}:{{ note.line }}</small>{% endif %}
-        <span class="mr-note-body">{{ note.body }}</span>
-        {% if note.diff_hunk %}
-        <details><summary>Code from git</summary><pre class="cr-hunk">{{ note.diff_hunk }}</pre></details>
-        {% endif %}
-        {% if note.html_url %}<small><a class="text-link" href="{{ note.html_url }}" target="_blank" rel="noopener noreferrer">Open note</a></small>{% endif %}
-
-        {% if note.suggestion or note.suggested_response %}
-        <div class="ai-card">
-          <span class="ai-chip">AI suggests</span>
-          {% if note.suggestion %}<p><strong>Fix:</strong> {{ note.suggestion }}</p>{% endif %}
-          {% if note.suggested_response %}<p><strong>Reply:</strong> {{ note.suggested_response }}</p>{% endif %}
-        </div>
-        {% elif note.state != 'responded' %}
-        <div class="ai-card pending"><span class="ai-chip">AI suggests</span><p>Generating a suggestion…</p></div>
-        {% endif %}
-
-        {% if note.state == 'responded' %}
-        <div class="you-card">
-          <span class="you-chip">You replied</span>
-          <p>{{ note.response }}</p>
-          {% if note.response_url %}<small><a class="text-link" href="{{ note.response_url }}" target="_blank" rel="noopener noreferrer">Open reply</a></small>{% endif %}
-        </div>
+          {% if note.state == 'responded' %}
+          <div class="you-card">
+            <span class="you-chip">You replied</span>
+            <p>{{ note.response }}</p>
+            {% if note.response_url %}<small><a class="text-link" href="{{ note.response_url }}" target="_blank" rel="noopener noreferrer">Open reply</a></small>{% endif %}
+          </div>
+          {% else %}
+          <form method="post" action="/merge-requests/{{ mr.id }}/notes/{{ note.id }}/reply" class="mr-reply-form">
+            <textarea class="compact" name="reply" placeholder="Edit the reply before posting…">{{ note.suggested_response }}</textarea>
+            <button class="tiny" data-loading-text="Posting...">Post reply</button>
+          </form>
+          {% endif %}
+        </article>
         {% else %}
-        <form method="post" action="/merge-requests/{{ mr.id }}/notes/{{ note.id }}/reply" class="mr-reply-form">
-          <textarea class="compact" name="reply" placeholder="Edit the reply before posting…">{{ note.suggested_response }}</textarea>
-          <button class="tiny" data-loading-text="Posting...">Post reply</button>
-        </form>
+        <p class="empty">No review notes scanned yet.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="panel mr-col">
+      <div class="hero-head">
+        <div>
+          <h2>CI overview</h2>
+          <p>{% if mr.last_scanned_at %}Last scanned {{ mr.last_scanned_at }}{% else %}Not scanned yet — press Scan now.{% endif %}</p>
+        </div>
+        <span class="ci-badge ci-{{ mr.ci_status }}">{{ mr.ci_status }}</span>
+      </div>
+
+      {% if mr.ci_status == 'failed' %}
+        {% if mr.ci_suggestion %}
+        <details class="ai-details" data-persist="mr-ci-fix">
+          <summary><span class="ai-chip">AI suggests</span> Show CI fix</summary>
+          <div class="ai-card"><p>{{ mr.ci_suggestion }}</p></div>
+        </details>
+        {% else %}
+        <div class="ai-card pending">
+          <span class="ai-chip">AI suggests</span><span class="spinner" aria-hidden="true"></span>
+          <span>Waiting for AI CI fix…</span>
+        </div>
         {% endif %}
-      </article>
-      {% else %}
-      <p class="empty">No review notes scanned yet.</p>
-      {% endfor %}
-    </div>
-  </section>
+      {% endif %}
+
+      <div class="list compact-list">
+        {% for job in mr.ci_jobs %}
+        <article>
+          <div class="ticket-focus-head">
+            <strong>{{ job.name }}</strong>
+            <span class="ci-badge ci-{{ 'failed' if (job.status in ['failed','failure','error','canceled','cancelled'] or job.conclusion in ['failed','failure','error','canceled','cancelled']) else ('passed' if (job.status in ['success','passed'] or job.conclusion in ['success','passed']) else 'running') }}">
+              {{ job.status }}{% if job.conclusion and job.conclusion != job.status %} / {{ job.conclusion }}{% endif %}
+            </span>
+          </div>
+          {% if job.summary %}<span>{{ job.summary }}</span>{% endif %}
+          {% if job.details_url %}<small><a class="text-link" href="{{ job.details_url }}" target="_blank" rel="noopener noreferrer">Open job</a></small>{% endif %}
+        </article>
+        {% else %}
+        <p class="empty">No CI jobs scanned yet.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+  </div>
 </div>

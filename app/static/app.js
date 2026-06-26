@@ -669,6 +669,28 @@ function initMrAutoScan(root = document) {
   window.addEventListener("beforeunload", () => window.clearInterval(intervalId), { once: true });
 }
 
+// The MR live panel re-renders every 3s (HTMX outerHTML swap), which would snap
+// any open <details> shut. Remember which AI-suggestion expanders the user has
+// opened (by their stable data-persist key) and re-open them after each swap.
+const mrOpenDetails = new Set();
+document.addEventListener(
+  "toggle",
+  (event) => {
+    const el = event.target;
+    if (el && el.matches && el.matches("details[data-persist]")) {
+      const key = el.getAttribute("data-persist");
+      if (el.open) mrOpenDetails.add(key);
+      else mrOpenDetails.delete(key);
+    }
+  },
+  true, // capture: the toggle event does not bubble
+);
+function restoreMrDetails(root = document) {
+  root.querySelectorAll("details[data-persist]").forEach((el) => {
+    if (mrOpenDetails.has(el.getAttribute("data-persist"))) el.open = true;
+  });
+}
+
 bindBusyButtons(document);
 initDashboardQueue(document);
 initFollowLogs(document);
@@ -678,6 +700,7 @@ initWebIde(document);
 initCodeReviewAutoScan(document);
 initCodeReviewCheckboxSync(document);
 initMrAutoScan(document);
+restoreMrDetails(document);
 initSkillsSearch(document);
 document.addEventListener("htmx:afterSwap", (event) => {
   const root = event.target instanceof Element ? event.target : document;
@@ -690,6 +713,7 @@ document.addEventListener("htmx:afterSwap", (event) => {
   initCodeReviewAutoScan(document);
   initCodeReviewCheckboxSync(document);
   initMrAutoScan(document);
+  restoreMrDetails(document);
   if (event.target && event.target.id === "run-interaction") {
     announce("Updated");
   }

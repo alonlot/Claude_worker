@@ -1386,6 +1386,32 @@ pre.diff .diff-ctx { color: #c9d1d9; }
 .mr-reply-form { display: grid; gap: 6px; margin-top: 4px; }
 .mr-reply-form textarea { min-height: 56px; }
 
+/* Side-by-side columns: CR notes (left) and CI (right) so neither pushes the
+   other down when there are many of either. Stacks on narrow screens. */
+.mr-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.mr-col { margin: 0; }
+@media (max-width: 900px) { .mr-columns { grid-template-columns: 1fr; } }
+
+/* Collapsible AI suggestion ("Show CI fix" / "Show suggested fix & reply") */
+.ai-details { margin: 6px 0 0; }
+.ai-details > summary {
+  cursor: pointer; display: flex; align-items: center; gap: 8px;
+  font-weight: 700; font-size: 13px; color: var(--ink); list-style: none;
+}
+.ai-details > summary::-webkit-details-marker { display: none; }
+.ai-details > summary::after { content: "▸"; color: var(--muted); margin-left: auto; }
+.ai-details[open] > summary::after { content: "▾"; }
+.ai-details > .ai-card { margin-top: 6px; }
+
+/* Loading spinner shown while Claude is generating a suggestion */
+.spinner {
+  width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto;
+  border: 2px solid var(--line); border-top-color: #7c4dff;
+  display: inline-block; vertical-align: middle; animation: cw-spin 0.8s linear infinite;
+}
+.ai-card.pending { display: flex; align-items: center; gap: 8px; }
+@keyframes cw-spin { to { transform: rotate(360deg); } }
+
 /* AI suggestion + the user's own reply — visually distinct, side by side */
 .ai-card, .you-card {
   border-radius: 10px; padding: 8px 12px; margin: 6px 0 0; display: grid; gap: 4px;
