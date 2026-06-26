@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="hero-head">
+    <div>
+      <h2>{{ mr.title }}</h2>
+      <p>
+        {% if mr.project %}{{ mr.project }}{% if mr.iid %}!{{ mr.iid }}{% endif %} · {% endif %}
+        {{ mr.source_branch or "?" }} → {{ mr.target_branch or "?" }}
+        {% if mr.run_id %}· <a class="text-link" href="/runs/{{ mr.run_id }}">run #{{ mr.run_id }}</a>{% endif %}
+      </p>
+    </div>
+    <a class="button-link secondary" href="/merge-requests">Back to list</a>
+  </div>
+  <div class="row">
+    <form method="post" action="/merge-requests/{{ mr.id }}/scan"><button data-loading-text="Scanning...">Scan now</button></form>
+    {% if mr.url %}<a class="button-link secondary" href="{{ mr.url }}" target="_blank" rel="noopener noreferrer">Open on host</a>{% endif %}
+  </div>
+  <small class="form-hint" id="mr-auto-status">Auto-refreshing CI and review notes — no need to reload.</small>
+</section>
+
+<!-- JS reads this to drive the auto-scan interval (server scans the host API). -->
+<div id="mr-auto" data-mr-id="{{ mr.id }}"></div>
+
+{% include "_mr_live.html" %}
+
+<section class="grid">
+  <div class="panel">
+    <h2>Fix CI</h2>
+    <form method="post" action="/merge-requests/{{ mr.id }}/fix-ci" class="stack">
+      <label>Extra guidance for Claude (optional)
+        <textarea class="compact message-box" name="user_notes" placeholder="Anything specific about the failing pipeline."></textarea>
+      </label>
+      <button data-loading-text="Starting CI fix..." {% if mr.ci_status != 'failed' %}class="secondary"{% endif %}>Fix CI</button>
+    </form>
+    <div class="inline-alert">
+      Fresh-clones the MR's <strong>{{ mr.source_branch or "source" }}</strong> branch, fixes the failing jobs,
+      commits and pushes so the pipeline re-runs.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Fix CR</h2>
+    <form method="post" action="/merge-requests/{{ mr.id }}/fix-cr" class="stack">
+      <label>Extra guidance for Claude (optional)
+        <textarea class="compact message-box" name="user_notes" placeholder="Anything specific about the review notes."></textarea>
+      </label>
+      <label class="check"><input type="checkbox" name="comment_back" checked> Post replies back to the reviewer</label>
+      <button data-loading-text="Starting CR fix...">Fix CR</button>
+    </form>
+    <div class="inline-alert">
+      Fresh-clones the MR branch, addresses every open review note, pushes the fix, and (optionally) posts a
+      first-person reply to each note. It never resolves threads or changes review state.
+    </div>
+  </div>
+</section>
+{% endblock %}

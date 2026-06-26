@@ -28,6 +28,8 @@
       <label>Remote name <input name="git_remote_name" value="{{ config.git.remote_name }}"></label>
       <label>Default repo URL <input name="git_default_repo_url" value="{{ config.git.default_repo_url }}"></label>
       <label>Default base branch <input name="git_default_base_branch" value="{{ config.git.default_base_branch }}"></label>
+      <label>Self-hosted GitLab host <input name="git_gitlab_host" value="{{ config.git.gitlab_host }}" placeholder="https://gitlab.mycompany.com (blank = gitlab.com)"></label>
+      <label>GitLab API token <input name="git_gitlab_token" type="password" value="{{ config.git.gitlab_token }}" placeholder="blank = use git token / GITLAB_TOKEN env"></label>
       <label class="check"><input name="auto_push" type="checkbox" {% if config.git.auto_push %}checked{% endif %}> Auto-push clean done runs</label>
       <label class="check"><input name="auto_merge_request" type="checkbox" {% if config.git.auto_merge_request %}checked{% endif %}> Auto-open merge request after push</label>
     </fieldset>

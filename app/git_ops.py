@@ -55,6 +55,14 @@ class GitOps:
         self.run(["git", "checkout", "-B", base, remote_ref], cwd=repo_path)
         self.run(["git", "checkout", "-B", branch_name], cwd=repo_path)
 
+    def checkout_existing_branch(self, repo_path: str | Path, branch_name: str) -> None:
+        """Check out an existing remote branch (e.g. the source branch of an MR)
+        rather than creating a new one, so a fix run lands on the real branch."""
+        repo_path = Path(repo_path)
+        self.run(["git", "fetch", self.config.git.remote_name, "--prune"], cwd=repo_path)
+        remote_ref = f"{self.config.git.remote_name}/{branch_name}"
+        self.run(["git", "checkout", "-B", branch_name, remote_ref], cwd=repo_path)
+
     def default_branch(self, repo_path: str | Path) -> str:
         ref = self.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=repo_path)
         return ref.rsplit("/", 1)[-1] if ref else "main"

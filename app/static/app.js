@@ -632,6 +632,43 @@ function initCodeReviewCheckboxSync(root = document) {
   sync();
 }
 
+// Merge Request detail: poll the host (GitLab/GitHub) for fresh CI + review
+// notes on an interval and let Claude (re)generate suggestions. The visible
+// CI/notes panel auto-refreshes itself via HTMX (every 3s), so this never
+// reloads the page — it just keeps the underlying data current.
+function initMrAutoScan(root = document) {
+  const panel = root.querySelector("#mr-auto");
+  if (!panel || panel.dataset.autoScanBound === "1") return;
+  panel.dataset.autoScanBound = "1";
+  const mrId = panel.dataset.mrId;
+  if (!mrId) return;
+  const status = document.querySelector("#mr-auto-status");
+  let inFlight = false;
+  const setStatus = (message) => {
+    if (status) status.textContent = message;
+  };
+  const refresh = async () => {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      const response = await fetch(`/merge-requests/${mrId}/auto-scan`, { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data.ok) {
+        setStatus(`Auto-refreshing — CI ${data.ci_count}, notes ${data.note_count} (${data.ci_status}).`);
+      } else if (data && data.error) {
+        setStatus(`Auto-refresh paused: ${data.error}`);
+      }
+    } catch {
+      setStatus("Auto-refresh temporarily unavailable.");
+    } finally {
+      inFlight = false;
+    }
+  };
+  refresh();
+  const intervalId = window.setInterval(refresh, 20000);
+  window.addEventListener("beforeunload", () => window.clearInterval(intervalId), { once: true });
+}
+
 bindBusyButtons(document);
 initDashboardQueue(document);
 initFollowLogs(document);
@@ -640,6 +677,7 @@ initLiveLogsPolling(document);
 initWebIde(document);
 initCodeReviewAutoScan(document);
 initCodeReviewCheckboxSync(document);
+initMrAutoScan(document);
 initSkillsSearch(document);
 document.addEventListener("htmx:afterSwap", (event) => {
   const root = event.target instanceof Element ? event.target : document;
@@ -651,6 +689,7 @@ document.addEventListener("htmx:afterSwap", (event) => {
   initWebIde(document);
   initCodeReviewAutoScan(document);
   initCodeReviewCheckboxSync(document);
+  initMrAutoScan(document);
   if (event.target && event.target.id === "run-interaction") {
     announce("Updated");
   }

@@ -64,6 +64,11 @@ git:
   remote_name: origin
   default_repo_url: git@github.com:alonlot/Claude_worker.git
   default_base_branch: main
+  # Self-hosted GitLab: base URL of your instance (empty = public gitlab.com).
+  gitlab_host: ""
+  # API token for reading merge requests, CI pipelines, and review notes.
+  # Empty falls back to git.token, then the GITLAB_TOKEN environment variable.
+  gitlab_token: ""
 
 claude:
   command: claude

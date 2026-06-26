@@ -266,6 +266,57 @@ CREATE TABLE IF NOT EXISTS ide_comments (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     resolved_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS merge_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL DEFAULT 'local',
+    url TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    iid INTEGER NOT NULL DEFAULT 0,
+    source_branch TEXT NOT NULL DEFAULT '',
+    target_branch TEXT NOT NULL DEFAULT '',
+    repo_url TEXT NOT NULL DEFAULT '',
+    run_id INTEGER,
+    discovery TEXT NOT NULL DEFAULT 'manual',
+    ci_jobs TEXT NOT NULL DEFAULT '',
+    ci_suggestion TEXT NOT NULL DEFAULT '',
+    ci_sig TEXT NOT NULL DEFAULT '',
+    ci_suggestion_sig TEXT NOT NULL DEFAULT '',
+    last_scanned_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_merge_requests_owner_url ON merge_requests(owner, url);
+
+CREATE TABLE IF NOT EXISTS mr_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mr_id INTEGER NOT NULL,
+    owner TEXT NOT NULL DEFAULT 'local',
+    provider TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    external_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'review',
+    author TEXT NOT NULL DEFAULT '',
+    file_path TEXT NOT NULL DEFAULT '',
+    line INTEGER NOT NULL DEFAULT 0,
+    body TEXT NOT NULL DEFAULT '',
+    diff_hunk TEXT NOT NULL DEFAULT '',
+    html_url TEXT NOT NULL DEFAULT '',
+    suggestion TEXT NOT NULL DEFAULT '',
+    suggested_response TEXT NOT NULL DEFAULT '',
+    suggestion_sig TEXT NOT NULL DEFAULT '',
+    response TEXT NOT NULL DEFAULT '',
+    response_url TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    responded_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mr_notes_mr_external ON mr_notes(mr_id, external_id, kind);
 """
 
 
@@ -814,6 +865,153 @@ class Database:
         self.execute(
             """
             UPDATE code_review_notes
+            SET response=?, response_url=?, state='responded', responded_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (response, response_url, note_id),
+        )
+
+    # ----- merge requests (the MR tab) -----------------------------------
+
+    def upsert_merge_request(self, owner: str, mr: dict[str, Any]) -> int:
+        """Insert or update a merge request by (owner, url). Returns its id.
+
+        Cached scan fields (ci_jobs, ci_suggestion, run linkage) are preserved
+        when a discovery refresh re-reports the same MR with only metadata.
+        """
+        url = str(mr.get("url") or "").strip()
+        if not url:
+            raise ValueError("merge request url is required")
+        existing = self.fetchone(
+            "SELECT id FROM merge_requests WHERE owner=? AND url=?", (owner, url)
+        )
+        fields = {
+            "provider": str(mr.get("provider") or ""),
+            "title": str(mr.get("title") or ""),
+            "project": str(mr.get("project") or ""),
+            "iid": int(mr.get("iid") or 0),
+            "source_branch": str(mr.get("source_branch") or ""),
+            "target_branch": str(mr.get("target_branch") or ""),
+            "repo_url": str(mr.get("repo_url") or ""),
+            "discovery": str(mr.get("discovery") or "manual"),
+        }
+        if mr.get("run_id") is not None:
+            fields["run_id"] = int(mr["run_id"])
+        if existing:
+            # Don't clobber metadata with blanks from a thinner discovery source.
+            sets = ", ".join(f"{k}=?" for k, v in fields.items() if v not in ("", 0) or k == "iid")
+            params = [v for k, v in fields.items() if v not in ("", 0) or k == "iid"]
+            if sets:
+                self.execute(
+                    f"UPDATE merge_requests SET {sets}, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    tuple(params) + (existing["id"],),
+                )
+            return int(existing["id"])
+        cols = ["owner", "url", *fields.keys()]
+        placeholders = ", ".join("?" for _ in cols)
+        with self.connect() as conn:
+            cur = conn.execute(
+                f"INSERT INTO merge_requests({', '.join(cols)}) VALUES ({placeholders})",
+                (owner, url, *fields.values()),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def get_merge_request(self, mr_id: int, owner: str = DEFAULT_OWNER) -> sqlite3.Row | None:
+        return self.fetchone("SELECT * FROM merge_requests WHERE id=? AND owner=?", (mr_id, owner))
+
+    def get_merge_request_by_url(self, owner: str, url: str) -> sqlite3.Row | None:
+        return self.fetchone(
+            "SELECT * FROM merge_requests WHERE owner=? AND url=?", (owner, url.strip())
+        )
+
+    def list_merge_requests(self, owner: str = DEFAULT_OWNER) -> list[sqlite3.Row]:
+        return self.fetchall(
+            "SELECT * FROM merge_requests WHERE owner=? ORDER BY updated_at DESC", (owner,)
+        )
+
+    def update_merge_request(self, mr_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        sets = ", ".join(f"{k}=?" for k in fields)
+        self.execute(
+            f"UPDATE merge_requests SET {sets}, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (*fields.values(), mr_id),
+        )
+
+    def delete_merge_request(self, mr_id: int, owner: str = DEFAULT_OWNER) -> None:
+        self.execute("DELETE FROM merge_requests WHERE id=? AND owner=?", (mr_id, owner))
+        self.execute("DELETE FROM mr_notes WHERE mr_id=?", (mr_id,))
+
+    def upsert_mr_note(self, mr_id: int, note: dict[str, Any], owner: str = DEFAULT_OWNER) -> int:
+        """Insert/update a reviewer note for an MR, preserving AI suggestions and
+        any posted response across refreshes (keyed by external_id+kind)."""
+        external_id = str(note.get("external_id") or "")
+        kind = str(note.get("kind") or "review")
+        existing = self.fetchone(
+            "SELECT id FROM mr_notes WHERE mr_id=? AND external_id=? AND kind=?",
+            (mr_id, external_id, kind),
+        )
+        values = (
+            str(note.get("provider") or ""),
+            str(note.get("source_url") or ""),
+            external_id,
+            kind,
+            str(note.get("author") or ""),
+            str(note.get("file_path") or ""),
+            int(note.get("line") or 0),
+            str(note.get("body") or ""),
+            str(note.get("diff_hunk") or ""),
+            str(note.get("html_url") or ""),
+        )
+        if existing:
+            self.execute(
+                """
+                UPDATE mr_notes
+                SET provider=?, source_url=?, external_id=?, kind=?, author=?, file_path=?,
+                    line=?, body=?, diff_hunk=?, html_url=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                values + (existing["id"],),
+            )
+            return int(existing["id"])
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO mr_notes(
+                    mr_id, owner, provider, source_url, external_id, kind, author,
+                    file_path, line, body, diff_hunk, html_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (mr_id, owner) + values,
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def mr_notes(self, mr_id: int) -> list[sqlite3.Row]:
+        return self.fetchall("SELECT * FROM mr_notes WHERE mr_id=? ORDER BY id", (mr_id,))
+
+    def open_mr_notes(self, mr_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            "SELECT * FROM mr_notes WHERE mr_id=? AND state='open' ORDER BY id", (mr_id,)
+        )
+
+    def set_mr_note_suggestion(
+        self, note_id: int, suggestion: str, suggested_response: str, suggestion_sig: str = ""
+    ) -> None:
+        self.execute(
+            """
+            UPDATE mr_notes
+            SET suggestion=?, suggested_response=?, suggestion_sig=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (suggestion, suggested_response, suggestion_sig, note_id),
+        )
+
+    def mark_mr_note_responded(self, note_id: int, response: str, response_url: str = "") -> None:
+        self.execute(
+            """
+            UPDATE mr_notes
             SET response=?, response_url=?, state='responded', responded_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
             WHERE id=?
             """,

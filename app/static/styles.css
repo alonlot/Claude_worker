@@ -1350,3 +1350,55 @@ pre.diff .diff-ctx { color: #c9d1d9; }
 .web-ide-diff .diff-add { color: #aff5b4; background: rgba(46, 160, 67, 0.18); border-left-color: #2ea043; }
 .web-ide-diff .diff-del { color: #ffdcd7; background: rgba(248, 81, 73, 0.18); border-left-color: #f85149; }
 .web-ide-diff .diff-ctx { color: #c9d1d9; }
+
+/* Merge Request tab */
+.mr-list { display: grid; gap: 10px; }
+.mr-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px 16px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: var(--panel);
+}
+.mr-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mr-title { font-weight: 700; font-size: 15px; }
+.mr-meta { display: flex; gap: 6px; align-items: center; }
+.mr-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.mr-source-run { background: #e6f7ee; color: #1a7f37; }
+.mr-source-listed { background: #eef0ff; color: #3a3f9f; }
+.mr-source-manual { background: #f1f3f6; color: var(--muted); }
+
+.ci-badge {
+  display: inline-flex; align-items: center; width: fit-content;
+  border-radius: 999px; padding: 3px 9px; font-size: 12px; font-weight: 800;
+  text-transform: capitalize; background: #eef0f3; color: var(--muted);
+}
+.ci-badge.ci-passed { background: #e6f7ee; color: #1a7f37; }
+.ci-badge.ci-failed { background: #fdecec; color: var(--danger); }
+.ci-badge.ci-running { background: #fff3d6; color: var(--warn); }
+.ci-badge.ci-none { background: #f1f3f6; color: var(--muted); }
+
+.mr-note { display: grid; gap: 5px; }
+.mr-note-body { white-space: pre-wrap; }
+.mr-reply-form { display: grid; gap: 6px; margin-top: 4px; }
+.mr-reply-form textarea { min-height: 56px; }
+
+/* AI suggestion + the user's own reply — visually distinct, side by side */
+.ai-card, .you-card {
+  border-radius: 10px; padding: 8px 12px; margin: 6px 0 0; display: grid; gap: 4px;
+  border: 1px solid var(--line);
+}
+.ai-card { background: #f3f0ff; border-color: #d9cffb; }
+.ai-card.pending { background: #f6f6fa; border-color: var(--line); color: var(--muted); }
+.ai-card p, .you-card p { margin: 0; color: var(--ink); }
+.ai-card.pending p { color: var(--muted); }
+.you-card { background: #e9f8ef; border-color: #b7e6c8; }
+.ai-chip, .you-chip {
+  display: inline-flex; width: fit-content; border-radius: 999px;
+  padding: 2px 9px; font-size: 11px; font-weight: 800; letter-spacing: 0.02em;
+}
+.ai-chip { background: #7c4dff; color: #fff; }
+.you-chip { background: #1a7f37; color: #fff; }

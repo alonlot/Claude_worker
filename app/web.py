@@ -28,7 +28,16 @@ from app.config import (
     load_config_text,
     save_config_text,
 )
-from app.code_review import scan_ci_jobs, scan_review_notes, suggest_review_url
+from app.code_review import (
+    CodeReviewError,
+    gitlab_auth_for,
+    list_open_merge_requests,
+    post_review_reply,
+    scan_ci_jobs,
+    scan_review_notes,
+    suggest_review_url,
+)
+from app import merge_requests as mrlib
 from app.db import Database
 from app.jira_client import JiraClient
 from app import notify
@@ -95,15 +104,16 @@ def create_app(config: Config, db: Database) -> FastAPI:
         mode = scan_mode if scan_mode in ("notes", "ci", "both") else "both"
         db.set_state(f"review_source_url:{run_id}", source_url, owner=owner)
         db.set_state(f"auto_cr:{run_id}", "1" if auto_cr_on else "0", owner=owner)
+        auth = gitlab_auth_for(app.state.config)
         try:
             notes: list = []
             ci_jobs: list = []
             if mode in ("notes", "both"):
-                notes = scan_review_notes(source_url)
+                notes = scan_review_notes(source_url, auth)
                 for note in notes:
                     db.upsert_code_review_note(run_id, note, owner=owner)
             if mode in ("ci", "both"):
-                ci_jobs = scan_ci_jobs(source_url)
+                ci_jobs = scan_ci_jobs(source_url, auth)
                 db.set_state(f"ci_jobs:{run_id}", json.dumps(ci_jobs), owner=owner)
             if mode == "notes":
                 flash = f"Scanned {len(notes)} code review note(s)."
@@ -531,7 +541,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
         detail["ci_jobs"] = ci_jobs
         saved_source_url = db.get_state(f"review_source_url:{run_id}", "", owner=owner)
         detail["suggested_review_url"] = saved_source_url or suggest_review_url(
-            detail["run"]["repo_url"], detail["run"]["branch_name"]
+            detail["run"]["repo_url"], detail["run"]["branch_name"], gitlab_auth_for(request.app.state.config)
         )
         return templates.TemplateResponse(request, "code_review.html", detail)
 
@@ -616,10 +626,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
         try:
             db.set_state(f"review_source_url:{run_id}", source_url, owner=owner)
             db.set_state(f"auto_cr:{run_id}", "1" if auto_cr == "1" else "0", owner=owner)
-            notes = scan_review_notes(source_url)
+            auth = gitlab_auth_for(request.app.state.config)
+            notes = scan_review_notes(source_url, auth)
             for note in notes:
                 db.upsert_code_review_note(run_id, note, owner=owner)
-            ci_jobs = scan_ci_jobs(source_url)
+            ci_jobs = scan_ci_jobs(source_url, auth)
             db.set_state(f"ci_jobs:{run_id}", json.dumps(ci_jobs), owner=owner)
             if auto_cr == "1" and notes:
                 spawn_tracked_task(
@@ -858,6 +869,215 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "stats": run_stats(db, owner),
             },
         )
+
+    # ---------------- merge requests tab ----------------
+
+    def mr_view(row) -> dict:
+        """Shape a merge_requests row for templates (parse CI, compute health)."""
+        ci_jobs = mrlib.parse_ci_jobs(row["ci_jobs"])
+        return {
+            "id": row["id"],
+            "url": row["url"],
+            "provider": row["provider"],
+            "title": row["title"] or row["url"],
+            "project": row["project"],
+            "iid": row["iid"],
+            "source_branch": row["source_branch"],
+            "target_branch": row["target_branch"],
+            "discovery": row["discovery"],
+            "run_id": row["run_id"],
+            "ci_jobs": ci_jobs,
+            "ci_status": mrlib.ci_overall(ci_jobs),
+            "ci_failed_jobs": mrlib.failed_ci_jobs(ci_jobs),
+            "ci_suggestion": row["ci_suggestion"],
+            "last_scanned_at": row["last_scanned_at"],
+        }
+
+    def mr_detail_context(request: Request, owner: str, mr_id: int) -> dict | None:
+        row = db.get_merge_request(mr_id, owner)
+        if not row:
+            return None
+        mr = mr_view(row)
+        mr["notes"] = [dict(note) for note in db.mr_notes(mr_id)]
+        return {
+            "request": request,
+            "title": registry.user_config(owner).ui.title,
+            "user": current_user(request),
+            "flash": pop_flash(request),
+            "mr": mr,
+        }
+
+    def discover_mrs(owner: str) -> None:
+        """Best-effort refresh of the MR list from this tool's runs and the
+        configured GitLab account. Never raises (the page must always render)."""
+        try:
+            mrlib.discover_from_runs(db, owner)
+        except Exception:
+            pass
+        try:
+            mrlib.refresh_listed_mrs(db, request_config(), owner)
+        except Exception:
+            pass
+
+    def request_config() -> Config:
+        return app.state.config
+
+    @app.get("/merge-requests", response_class=HTMLResponse)
+    async def merge_requests_page(request: Request):
+        owner = owner_of(request)
+        discover_mrs(owner)
+        rows = db.list_merge_requests(owner)
+        return templates.TemplateResponse(
+            request,
+            "merge_requests.html",
+            {
+                "request": request,
+                "title": registry.user_config(owner).ui.title,
+                "user": current_user(request),
+                "flash": pop_flash(request),
+                "mrs": [mr_view(row) for row in rows],
+                "gitlab_configured": bool(gitlab_auth_for(request_config()).auth_token()),
+            },
+        )
+
+    @app.post("/merge-requests/refresh")
+    async def merge_requests_refresh(request: Request):
+        owner = owner_of(request)
+        discover_mrs(owner)
+        request.app.state.flash = "Refreshed merge requests."
+        return RedirectResponse("/merge-requests", status_code=303)
+
+    @app.post("/merge-requests/add")
+    async def merge_requests_add(request: Request, source_url: str = Form("")):
+        owner = owner_of(request)
+        try:
+            mr_id = mrlib.register_manual_mr(db, request_config(), owner, source_url)
+        except CodeReviewError as exc:
+            request.app.state.flash = f"Could not add merge request: {exc}"
+            return RedirectResponse("/merge-requests", status_code=303)
+        return RedirectResponse(f"/merge-requests/{mr_id}", status_code=303)
+
+    @app.get("/merge-requests/{mr_id}", response_class=HTMLResponse)
+    async def merge_request_detail(mr_id: int, request: Request):
+        owner = owner_of(request)
+        detail = mr_detail_context(request, owner, mr_id)
+        if detail is None:
+            return RedirectResponse("/merge-requests", status_code=303)
+        return templates.TemplateResponse(request, "mr_detail.html", detail)
+
+    @app.get("/merge-requests/{mr_id}/live", response_class=HTMLResponse)
+    async def merge_request_live(mr_id: int, request: Request):
+        owner = owner_of(request)
+        detail = mr_detail_context(request, owner, mr_id)
+        if detail is None:
+            return HTMLResponse("", status_code=404)
+        return templates.TemplateResponse(request, "_mr_live.html", detail)
+
+    def _scan_and_suggest(owner: str, mr_id: int) -> dict:
+        row = db.get_merge_request(mr_id, owner)
+        if not row:
+            return {"ok": False, "reason": "not_found"}
+        summary = mrlib.scan_and_store(db, request_config(), owner, row)
+        # Auto-generate AI advice the moment results land (cached by signature).
+        spawn_tracked_task(
+            worker_for_owner(owner).generate_mr_suggestions(mr_id),
+            db,
+            title="MR suggestion failed",
+            message=f"Could not generate AI suggestions for MR #{mr_id}.",
+            owner=owner,
+        )
+        return {"ok": True, **summary}
+
+    @app.post("/merge-requests/{mr_id}/scan")
+    async def merge_request_scan(mr_id: int, request: Request):
+        owner = owner_of(request)
+        try:
+            result = _scan_and_suggest(owner, mr_id)
+        except CodeReviewError as exc:
+            request.app.state.flash = f"Scan failed: {exc}"
+            return RedirectResponse(f"/merge-requests/{mr_id}", status_code=303)
+        if not result.get("ok"):
+            return RedirectResponse("/merge-requests", status_code=303)
+        request.app.state.flash = (
+            f"Scanned {result['ci_count']} CI job(s) and {result['note_count']} review note(s)."
+        )
+        return RedirectResponse(f"/merge-requests/{mr_id}", status_code=303)
+
+    @app.post("/merge-requests/{mr_id}/auto-scan")
+    async def merge_request_auto_scan(mr_id: int, request: Request):
+        """Called by JS on an interval so CI/notes + AI advice refresh with no F5."""
+        owner = owner_of(request)
+        if not db.get_merge_request(mr_id, owner):
+            return JSONResponse({"ok": False, "reason": "not_found"}, status_code=404)
+        try:
+            return JSONResponse(_scan_and_suggest(owner, mr_id))
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    @app.post("/merge-requests/{mr_id}/fix-ci")
+    async def merge_request_fix_ci(mr_id: int, request: Request, user_notes: str = Form("")):
+        owner = owner_of(request)
+        if not db.get_merge_request(mr_id, owner):
+            return RedirectResponse("/merge-requests", status_code=303)
+        spawn_tracked_task(
+            worker_for_owner(owner).run_mr_fix(mr_id, "ci", user_notes=user_notes),
+            db,
+            title="MR CI fix failed",
+            message=f"Fix CI run crashed for MR #{mr_id}.",
+            owner=owner,
+        )
+        request.app.state.flash = "Started a Fix CI run (fresh clone of the MR branch)."
+        return RedirectResponse(f"/merge-requests/{mr_id}", status_code=303)
+
+    @app.post("/merge-requests/{mr_id}/fix-cr")
+    async def merge_request_fix_cr(
+        mr_id: int, request: Request, user_notes: str = Form(""), comment_back: str | None = Form(None)
+    ):
+        owner = owner_of(request)
+        if not db.get_merge_request(mr_id, owner):
+            return RedirectResponse("/merge-requests", status_code=303)
+        spawn_tracked_task(
+            worker_for_owner(owner).run_mr_fix(
+                mr_id, "cr", user_notes=user_notes, comment_back=comment_back == "on"
+            ),
+            db,
+            title="MR CR fix failed",
+            message=f"Fix CR run crashed for MR #{mr_id}.",
+            owner=owner,
+        )
+        request.app.state.flash = "Started a Fix CR run (fresh clone of the MR branch)."
+        return RedirectResponse(f"/merge-requests/{mr_id}", status_code=303)
+
+    @app.post("/merge-requests/{mr_id}/notes/{note_id}/reply")
+    async def merge_request_note_reply(
+        mr_id: int, note_id: int, request: Request, reply: str = Form("")
+    ):
+        owner = owner_of(request)
+        mr = db.get_merge_request(mr_id, owner)
+        note = db.fetchone("SELECT * FROM mr_notes WHERE id=? AND mr_id=?", (note_id, mr_id))
+        if not mr or not note:
+            return RedirectResponse("/merge-requests", status_code=303)
+        body = reply.strip() or note["suggested_response"]
+        if not body:
+            request.app.state.flash = "Nothing to post — write a reply first."
+            return RedirectResponse(f"/merge-requests/{mr_id}", status_code=303)
+        try:
+            url = post_review_reply(
+                note["source_url"], note["external_id"], note["kind"], body,
+                auth=gitlab_auth_for(request_config()),
+            )
+            db.mark_mr_note_responded(note_id, body, url)
+            request.app.state.flash = "Reply posted to the reviewer."
+        except Exception as exc:  # noqa: BLE001
+            request.app.state.flash = f"Could not post reply: {exc}"
+        return RedirectResponse(f"/merge-requests/{mr_id}", status_code=303)
+
+    @app.post("/merge-requests/{mr_id}/delete")
+    async def merge_request_delete(mr_id: int, request: Request):
+        owner = owner_of(request)
+        db.delete_merge_request(mr_id, owner)
+        request.app.state.flash = "Removed merge request from the list."
+        return RedirectResponse("/merge-requests", status_code=303)
 
     def ide_comments_context(request: Request, run_id: int) -> dict:
         return {
@@ -1158,6 +1378,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
         git_remote_name: str = Form("origin"),
         git_default_repo_url: str = Form(""),
         git_default_base_branch: str = Form("main"),
+        git_gitlab_host: str = Form(""),
+        git_gitlab_token: str = Form(""),
         auto_push: str | None = Form(None),
         auto_merge_request: str | None = Form(None),
         claude_command: str = Form("claude"),
@@ -1208,6 +1430,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
                     "remote_name": git_remote_name,
                     "default_repo_url": git_default_repo_url,
                     "default_base_branch": git_default_base_branch,
+                    "gitlab_host": git_gitlab_host,
+                    "gitlab_token": git_gitlab_token,
                     "auto_push": auto_push == "on",
                     "auto_merge_request": auto_merge_request == "on",
                 },

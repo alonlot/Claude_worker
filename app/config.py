@@ -66,6 +66,13 @@ class GitConfig:
     auto_push: bool = False
     # When true (and auto_push), a GitHub PR / GitLab MR is opened after the push.
     auto_merge_request: bool = False
+    # Self-hosted GitLab support. gitlab_host is the base URL of the instance
+    # (e.g. "https://gitlab.mycompany.com"); empty means the public
+    # "https://gitlab.com". gitlab_token is the API token used to read merge
+    # requests, CI pipelines, and discussion notes; empty falls back to the
+    # general git.token and then the GITLAB_TOKEN environment variable.
+    gitlab_host: str = ""
+    gitlab_token: str = ""
 
 
 @dataclass
@@ -302,6 +309,7 @@ def secret_values(config: Config) -> list[str]:
         for value in [
             config.jira.token,
             config.git.token,
+            config.git.gitlab_token,
             config.claude.api_key,
             config.notify.smtp_password,
         ]

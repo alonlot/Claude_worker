@@ -21,7 +21,17 @@ from app.claude_runner import (
     review_prompt,
 )
 from app.config import Config, DEFAULT_OWNER, apply_user_sections, secret_values
-from app.code_review import create_merge_request, post_review_reply
+from app.code_review import create_merge_request, gitlab_auth_for, post_review_reply
+from app.merge_requests import (
+    ci_failed,
+    ci_suggestion_prompt,
+    cr_suggestion_prompt,
+    failed_ci_jobs,
+    parse_ci_jobs as mr_parse_ci_jobs,
+    parse_cr_suggestions,
+    render_ci_context as mr_render_ci_context,
+    signature as mr_signature,
+)
 from app.db import Database
 from app.git_ops import GitOps
 from app.execution import get_execution_backend
@@ -348,7 +358,10 @@ class Worker:
         if not run:
             raise RuntimeError("Run not found")
         title = f"{run['ticket_key']}: {run['commit_message'] or 'Automated change'}"
-        url = create_merge_request(run["repo_url"], run["branch_name"], run["base_branch"], title, run["run_report"])
+        url = create_merge_request(
+            run["repo_url"], run["branch_name"], run["base_branch"], title, run["run_report"],
+            auth=gitlab_auth_for(self.config),
+        )
         if url:
             self._log(run_id, "git", f"Opened merge request: {url}")
             self.db.set_state(f"merge_request_url:{run_id}", url, owner=self.owner)
@@ -558,7 +571,10 @@ Include one object for every NOTE_ID above.
             response = responses.get(int(note["id"])) or "Thanks. I reviewed this note and updated the branch or left the requested context in the latest run report."
             response_url = ""
             if comment_back:
-                response_url = post_review_reply(note["source_url"], note["external_id"], note["kind"], response)
+                response_url = post_review_reply(
+                    note["source_url"], note["external_id"], note["kind"], response,
+                    auth=gitlab_auth_for(self.config),
+                )
                 self._log(run_id, "cr", f"Commented on review note #{note['id']}")
             self.db.mark_code_review_note_responded(int(note["id"]), response, response_url)
         self.db.add_notification("Code review handled", run["ticket_key"], "success", run_id, owner=self.owner)
@@ -662,6 +678,195 @@ Tasks:
         self._log(run_id, "git", f"Commit created: {commit_sha}")
         self.db.update_run(run_id, commit_sha=commit_sha, commit_message=commit_message, state="done", progress=100)
         self.db.add_notification("CI fix finished", run["ticket_key"], "success", run_id, owner=self.owner)
+
+    # ----- Merge Request tab: AI suggestions + fresh-clone fixes ----------
+
+    async def generate_mr_suggestions(self, mr_id: int) -> None:
+        """Generate cheap, cached AI advice for an MR without a workspace run.
+
+        When CI is failing, write a short fix-note. For each open review note,
+        propose how to address it and a first-person reply to post back. Each
+        kind is keyed by a content signature so it only regenerates when the
+        underlying CI output or note text actually changed (the "auto-run the
+        second the result lands" behaviour, without burning tokens on a loop).
+        """
+        mr_row = self.db.get_merge_request(mr_id, self.owner)
+        if not mr_row:
+            return
+        runner = self._runner(None, lambda phase, line: None)
+
+        ci_jobs = mr_parse_ci_jobs(mr_row["ci_jobs"])
+        ci_sig = mr_row["ci_sig"] or ""
+        if ci_failed(ci_jobs) and ci_sig and ci_sig != (mr_row["ci_suggestion_sig"] or ""):
+            context = mr_render_ci_context(failed_ci_jobs(ci_jobs))
+            try:
+                note = await runner.run_prompt(
+                    "mr-ci-suggest", ci_suggestion_prompt(mr_row["title"] or mr_row["url"], context)
+                )
+                self.db.update_merge_request(mr_id, ci_suggestion=note.strip(), ci_suggestion_sig=ci_sig)
+            except Exception as exc:  # noqa: BLE001 - advice is best-effort
+                self.db.update_merge_request(
+                    mr_id, ci_suggestion=f"(Could not generate a CI suggestion: {exc})", ci_suggestion_sig=ci_sig
+                )
+
+        pending: list[tuple[Any, str]] = []
+        for note in self.db.open_mr_notes(mr_id):
+            body_sig = mr_signature(note["body"])
+            if not note["suggestion"] or (note["suggestion_sig"] or "") != body_sig:
+                pending.append((note, body_sig))
+        if pending:
+            note_dicts = [dict(note) for note, _ in pending]
+            try:
+                output = await runner.run_prompt("mr-cr-suggest", cr_suggestion_prompt(note_dicts))
+                parsed = parse_cr_suggestions(output)
+            except Exception:  # noqa: BLE001
+                parsed = {}
+            for note, body_sig in pending:
+                advice = parsed.get(int(note["id"]), {})
+                self.db.set_mr_note_suggestion(
+                    int(note["id"]), advice.get("fix", ""), advice.get("reply", ""), body_sig
+                )
+
+    async def run_mr_fix(
+        self, mr_id: int, mode: str, user_notes: str = "", comment_back: bool = True
+    ) -> int:
+        """Fix a merge request's failing CI or open review notes by fresh-cloning
+        the MR's source branch, running the agent, committing, and pushing the
+        branch so the MR updates. Returns the new run id. mode is 'ci' or 'cr'."""
+        if mode not in ("ci", "cr"):
+            raise RuntimeError("mode must be 'ci' or 'cr'")
+        mr_row = self.db.get_merge_request(mr_id, self.owner)
+        if not mr_row:
+            raise RuntimeError("Merge request not found")
+        source_branch = (mr_row["source_branch"] or "").strip()
+        if not source_branch:
+            raise RuntimeError("This MR has no known source branch yet. Open and Scan it from the MR list first.")
+        repo_url = (mr_row["repo_url"] or "").strip()
+        if not repo_url:
+            raise RuntimeError(
+                "No repository URL is known for this MR. Set git.gitlab_host so a clone URL can be derived, "
+                "or open it from a run this tool created."
+            )
+        if self.lock.locked():
+            raise RuntimeError("A run is already in progress.")
+        iid = mr_row["iid"] or mr_id
+        ticket_key = f"MR-{iid}"
+        async with self.lock:
+            run_id = self.db.create_run(ticket_key, owner=self.owner)
+            self.db.update_merge_request(mr_id, run_id=run_id)
+            try:
+                self.claude = self._runner(run_id, lambda phase, line: self._log(run_id, phase, line))
+                self.db.update_run(
+                    run_id,
+                    state="preparing_git",
+                    repo_url=repo_url,
+                    branch_name=source_branch,
+                    base_branch=mr_row["target_branch"] or "",
+                    progress=10,
+                )
+                self._log(run_id, "git", f"Fresh-cloning {repo_url} for MR {mode.upper()} fix")
+                repo_path = self.git.clone_for_ticket(ticket_key, repo_url)
+                self.git.checkout_existing_branch(repo_path, source_branch)
+                self._log(run_id, "git", f"Checked out MR source branch {source_branch}")
+                self.git.cleanup_old_clones()
+                self.db.update_run(run_id, workspace_path=str(repo_path), state="running_claude", progress=40)
+
+                open_notes: list[Any] = []
+                if mode == "ci":
+                    ci_jobs = mr_parse_ci_jobs(mr_row["ci_jobs"])
+                    ci_context = mr_render_ci_context(ci_jobs)
+                    if not ci_context.strip():
+                        raise RuntimeError("No CI context stored. Scan the MR before running Fix CI.")
+                    prompt = f"""
+You are fixing CI failures on merge request {mr_row['url']} (branch {source_branch}).
+Do not run git commands. Python owns all Git interactions.
+
+CI output:
+{ci_context}
+
+Additional user instructions:
+{user_notes}
+
+Identify the failing checks and apply focused code/config fixes in this repository.
+If the CI output is incomplete, make the safest likely fix and explain assumptions in plain text.
+"""
+                    commit_message = f"{ticket_key}: Fix CI"
+                else:
+                    open_notes = self.db.open_mr_notes(mr_id)
+                    if not open_notes:
+                        raise RuntimeError("No open review notes to fix on this MR.")
+                    notes_text = "\n\n".join(self._format_review_note(note) for note in open_notes)
+                    branch_diff = self._branch_diff_context(repo_path, mr_row["target_branch"] or "")
+                    prompt = f"""
+You are addressing code review notes on merge request {mr_row['url']} (branch {source_branch}).
+Do not run git commands. Python owns all Git interactions.
+
+For each review note: read the CODE FROM GIT hunk and the referenced file, fix the code when the
+note is actionable, and write a first-person reply to post back to the reviewer. If a note is a
+question or incorrect, answer honestly without inventing certainty. Do not resolve threads.
+
+Additional user instructions:
+{user_notes}
+
+Current branch diff (from git):
+{branch_diff}
+
+Review notes:
+{notes_text}
+
+After editing, return JSON: {{"responses": [{{"note_id": 123, "response": "first-person reply"}}]}}
+Include one object for every NOTE_ID above.
+"""
+                    commit_message = f"{ticket_key}: Address review notes"
+
+                output = await self.claude.run_prompt(f"mr-{mode}-fix", prompt, cwd=repo_path)
+
+                if self.git.status(repo_path):
+                    self.db.update_run(
+                        run_id,
+                        changed_files=self.git.changed_files(repo_path),
+                        diff_summary=self.git.diff_stat(repo_path),
+                    )
+                    self._log(run_id, "git", f"Committing MR fix: {commit_message}")
+                    self.git.commit_all(repo_path, commit_message)
+                    commit_sha = self.git.head_sha(repo_path)
+                    self._log(run_id, "git", f"Commit created: {commit_sha}")
+                    self.db.update_run(run_id, commit_sha=commit_sha, commit_message=commit_message)
+                    pushed = self.git.push_branch(repo_path, source_branch)
+                    self._log(run_id, "git", pushed or f"pushed {source_branch}")
+                else:
+                    self._log(run_id, "git", "Agent made no file changes.")
+
+                if mode == "cr":
+                    responses = self._parse_review_responses(output)
+                    for note in open_notes:
+                        reply = (
+                            responses.get(int(note["id"]))
+                            or note["suggested_response"]
+                            or "Thanks - I addressed this in the latest push on the branch."
+                        )
+                        response_url = ""
+                        if comment_back:
+                            response_url = post_review_reply(
+                                note["source_url"], note["external_id"], note["kind"], reply,
+                                auth=gitlab_auth_for(self.config),
+                            )
+                            self._log(run_id, "cr", f"Replied to review note {note['external_id']}")
+                        self.db.mark_mr_note_responded(int(note["id"]), reply, response_url)
+
+                self.db.update_run(run_id, state="done", progress=100, finished_at=datetime.utcnow().isoformat())
+                self.db.add_notification(
+                    f"MR {mode.upper()} fix finished", f"{ticket_key} on {source_branch}", "success", run_id, owner=self.owner
+                )
+                self._notify_external(f"MR {mode.upper()} fix finished", f"{ticket_key} updated", "success", run_id)
+                return run_id
+            except asyncio.CancelledError:
+                self.db.update_run(run_id, state="cancelled", error="cancelled", finished_at=datetime.utcnow().isoformat())
+                raise
+            except Exception as exc:
+                self.db.update_run(run_id, state="failed", error=str(exc), finished_at=datetime.utcnow().isoformat())
+                self.db.add_notification(f"MR {mode} fix failed", f"{ticket_key}: {exc}", "error", run_id, owner=self.owner)
+                raise
 
     def rerun_ticket(self, ticket_key: str) -> None:
         self.db.enqueue(ticket_key, owner=self.owner)
