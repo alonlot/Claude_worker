@@ -51,12 +51,15 @@ def test_ci_job_signature_changes_with_outcome():
 def test_skills_block_builds_from_selection(tmp_path):
     db = _db(tmp_path)
     sid = db.create_skill("local", "CI rules", content="The lint job uses ruff.")
-    assert mr.skills_block(db, "local", "ci") == ""  # nothing selected yet
-    db.set_state("mr_skills:ci", '[%d]' % sid, owner="local")
-    block = mr.skills_block(db, "local", "ci")
+    mr_id = db.upsert_merge_request("local", {"url": "https://gitlab.com/g/p/-/merge_requests/1"})
+    row = db.get_merge_request(mr_id)
+    assert mr.skills_block(db, row, "ci") == ""  # nothing selected on this MR yet
+    db.update_merge_request(mr_id, ci_skill_ids=str(sid))
+    row = db.get_merge_request(mr_id)
+    block = mr.skills_block(db, row, "ci")
     assert "CI rules" in block and "ruff" in block
     assert "custom jobs" in block  # CI-flavored intro
-    assert mr.skills_block(db, "local", "cr") == ""  # CR selection independent
+    assert mr.skills_block(db, row, "cr") == ""  # CR selection independent
 
 
 def test_parse_cr_suggestions():

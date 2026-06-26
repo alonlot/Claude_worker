@@ -287,6 +287,8 @@ CREATE TABLE IF NOT EXISTS merge_requests (
     ci_sig TEXT NOT NULL DEFAULT '',
     ci_suggestion_sig TEXT NOT NULL DEFAULT '',
     ci_job_suggestions TEXT NOT NULL DEFAULT '',
+    ci_skill_ids TEXT NOT NULL DEFAULT '',
+    cr_skill_ids TEXT NOT NULL DEFAULT '',
     last_scanned_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -371,8 +373,9 @@ class Database:
         ).fetchone()
         if mr_table:
             mr_columns = {row["name"] for row in conn.execute("PRAGMA table_info(merge_requests)").fetchall()}
-            if "ci_job_suggestions" not in mr_columns:
-                conn.execute("ALTER TABLE merge_requests ADD COLUMN ci_job_suggestions TEXT NOT NULL DEFAULT ''")
+            for col in ("ci_job_suggestions", "ci_skill_ids", "cr_skill_ids"):
+                if col not in mr_columns:
+                    conn.execute(f"ALTER TABLE merge_requests ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
 
         # Backfill the owner column on databases created before multi-user support.
         for table in SIMPLE_OWNED_TABLES:

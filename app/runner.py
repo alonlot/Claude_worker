@@ -710,7 +710,7 @@ Tasks:
                 stored = {}
             stale = [job for job in failed if stored.get(job["name"], {}).get("sig") != ci_job_signature(job)]
             if stale:
-                ci_skills = mr_skills_block(self.db, self.owner, "ci")
+                ci_skills = mr_skills_block(self.db, mr_row, "ci")
                 try:
                     output = await runner.run_prompt(
                         "mr-ci-suggest",
@@ -734,7 +734,7 @@ Tasks:
                 pending.append((note, body_sig))
         if pending:
             note_dicts = [dict(note) for note, _ in pending]
-            cr_skills = mr_skills_block(self.db, self.owner, "cr")
+            cr_skills = mr_skills_block(self.db, mr_row, "cr")
             try:
                 output = await runner.run_prompt("mr-cr-suggest", cr_suggestion_prompt(note_dicts, cr_skills))
                 parsed = parse_cr_suggestions(output)
@@ -799,7 +799,7 @@ Tasks:
                     prompt = f"""
 You are fixing CI failures on merge request {mr_row['url']} (branch {source_branch}).
 Do not run git commands. Python owns all Git interactions.
-{mr_skills_block(self.db, self.owner, "ci")}
+{mr_skills_block(self.db, mr_row, "ci")}
 CI output:
 {ci_context}
 
@@ -820,7 +820,7 @@ If the CI output is incomplete, make the safest likely fix and explain assumptio
                     prompt = f"""
 You are addressing code review notes on merge request {mr_row['url']} (branch {source_branch}).
 Do not run git commands. Python owns all Git interactions.
-{mr_skills_block(self.db, self.owner, "cr")}
+{mr_skills_block(self.db, mr_row, "cr")}
 For each review note: read the CODE FROM GIT hunk and the referenced file, fix the code when the
 note is actionable, and write a first-person reply to post back to the reviewer. If a note is a
 question or incorrect, answer honestly without inventing certainty. Follow the code conventions

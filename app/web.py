@@ -1049,6 +1049,8 @@ def create_app(config: Config, db: Database) -> FastAPI:
             "ci_status": mrlib.ci_overall(ci_jobs),
             "ci_failed_jobs": mrlib.failed_ci_jobs(ci_jobs),
             "last_scanned_at": row["last_scanned_at"],
+            "ci_skill_ids": set(mrlib.selected_skill_ids(row, "ci")),
+            "cr_skill_ids": set(mrlib.selected_skill_ids(row, "cr")),
         }
 
     def mr_detail_context(request: Request, owner: str, mr_id: int) -> dict | None:
@@ -1063,6 +1065,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
             "user": current_user(request),
             "flash": pop_flash(request),
             "mr": mr,
+            "skills": db.list_skills(owner),
         }
 
     def discover_mrs(owner: str) -> None:
@@ -1095,22 +1098,25 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "flash": pop_flash(request),
                 "mrs": [mr_view(row) for row in rows],
                 "gitlab_configured": bool(gitlab_auth_for(request_config()).auth_token()),
-                "skills": db.list_skills(owner),
-                "ci_skill_ids": set(mrlib.selected_skill_ids(db, owner, "ci")),
-                "cr_skill_ids": set(mrlib.selected_skill_ids(db, owner, "cr")),
             },
         )
 
-    @app.post("/merge-requests/skills")
-    async def merge_requests_save_skills(
-        request: Request, ci_skill_ids: list[int] = Form(default=[]), cr_skill_ids: list[int] = Form(default=[])
+    @app.post("/merge-requests/{mr_id}/skills")
+    async def merge_request_save_skills(
+        mr_id: int, request: Request,
+        ci_skill_ids: list[int] = Form(default=[]), cr_skill_ids: list[int] = Form(default=[]),
     ):
         owner = owner_of(request)
+        if not db.get_merge_request(mr_id, owner):
+            return RedirectResponse("/merge-requests", status_code=303)
         owned = {int(s["id"]) for s in db.list_skills(owner)}
-        db.set_state("mr_skills:ci", json.dumps([s for s in ci_skill_ids if s in owned]), owner=owner)
-        db.set_state("mr_skills:cr", json.dumps([s for s in cr_skill_ids if s in owned]), owner=owner)
-        request.app.state.flash = "Saved skills the AI uses for CI and CR."
-        return RedirectResponse("/merge-requests", status_code=303)
+        db.update_merge_request(
+            mr_id,
+            ci_skill_ids=",".join(str(s) for s in ci_skill_ids if s in owned),
+            cr_skill_ids=",".join(str(s) for s in cr_skill_ids if s in owned),
+        )
+        request.app.state.flash = "Saved the skills this merge request uses for CI and CR."
+        return RedirectResponse(f"/merge-requests/{mr_id}", status_code=303)
 
     @app.post("/merge-requests/refresh")
     async def merge_requests_refresh(request: Request):

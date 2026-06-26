@@ -97,19 +97,18 @@ def render_ci_context(ci_jobs: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def selected_skill_ids(db: Any, owner: str, kind: str) -> list[int]:
-    """Skill ids the user picked to inform MR CI ('ci') or CR ('cr') prompts."""
-    raw = db.get_state(f"mr_skills:{kind}", "", owner=owner)
+def selected_skill_ids(mr_row: Any, kind: str) -> list[int]:
+    """Skill ids chosen on THIS merge request to inform its CI/CR prompts."""
     try:
-        data = json.loads(raw) if raw else []
-    except json.JSONDecodeError:
-        return []
-    return [int(x) for x in data if str(x).strip().lstrip("-").isdigit()]
+        raw = mr_row[f"{kind}_skill_ids"]
+    except (KeyError, IndexError, TypeError):
+        raw = ""
+    return [int(part) for part in str(raw or "").split(",") if part.strip().lstrip("-").isdigit()]
 
 
-def skills_block(db: Any, owner: str, kind: str) -> str:
-    """Render the user's selected CI/CR skills as a prompt block (or '')."""
-    ids = selected_skill_ids(db, owner, kind)
+def skills_block(db: Any, mr_row: Any, kind: str) -> str:
+    """Render the merge request's selected CI/CR skills as a prompt block (or '')."""
+    ids = selected_skill_ids(mr_row, kind)
     if not ids:
         return ""
     skills = db.skills_by_ids(ids)

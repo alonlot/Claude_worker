@@ -19,6 +19,34 @@
   <small class="form-hint" id="mr-auto-status">Auto-refreshing CI and review notes — no need to reload.</small>
 </section>
 
+<section class="panel">
+  <details class="mr-skills-panel">
+    <summary>Skills this MR uses for CI &amp; CR</summary>
+    <p class="field-hint">Pick skills so the AI understands this MR's custom CI jobs and follows the right code conventions when it suggests fixes and replies. Create skills (including from Confluence) on the <a class="text-link" href="/skills">Skills</a> page.</p>
+    {% if skills %}
+    <form method="post" action="/merge-requests/{{ mr.id }}/skills">
+      <div class="mr-skill-cols">
+        <fieldset>
+          <legend>CI — understand custom jobs</legend>
+          {% for skill in skills %}
+          <label class="check"><input type="checkbox" name="ci_skill_ids" value="{{ skill.id }}" {% if skill.id in mr.ci_skill_ids %}checked{% endif %}> {{ skill.name }}{% if skill.category %} <small>({{ skill.category }})</small>{% endif %}</label>
+          {% endfor %}
+        </fieldset>
+        <fieldset>
+          <legend>CR — code conventions</legend>
+          {% for skill in skills %}
+          <label class="check"><input type="checkbox" name="cr_skill_ids" value="{{ skill.id }}" {% if skill.id in mr.cr_skill_ids %}checked{% endif %}> {{ skill.name }}{% if skill.category %} <small>({{ skill.category }})</small>{% endif %}</label>
+          {% endfor %}
+        </fieldset>
+      </div>
+      <button class="secondary" data-loading-text="Saving...">Save skills for this MR</button>
+    </form>
+    {% else %}
+    <p class="empty">No skills yet. Create some on the <a class="text-link" href="/skills">Skills</a> page first.</p>
+    {% endif %}
+  </details>
+</section>
+
 <!-- JS reads this to drive the auto-scan interval (server scans the host API). -->
 <div id="mr-auto" data-mr-id="{{ mr.id }}"></div>
 

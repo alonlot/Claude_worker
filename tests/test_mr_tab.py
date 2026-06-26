@@ -159,21 +159,23 @@ def test_fix_ci_route_spawns(tmp_path, monkeypatch):
     assert resp.status_code == 303
 
 
-def test_save_mr_skills_route(tmp_path):
+def test_save_mr_skills_route_is_per_mr(tmp_path):
     config, db = _setup(tmp_path)
+    mr_id = _seed_mr(db)
     ci_skill = db.create_skill("local", "CI", content="x")
     cr_skill = db.create_skill("local", "CR", content="y")
     client = TestClient(create_app(config, db))
     resp = client.post(
-        "/merge-requests/skills",
+        f"/merge-requests/{mr_id}/skills",
         data={"ci_skill_ids": [ci_skill], "cr_skill_ids": [cr_skill]},
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert mrlib.selected_skill_ids(db, "local", "ci") == [ci_skill]
-    assert mrlib.selected_skill_ids(db, "local", "cr") == [cr_skill]
-    # the selector panel renders on the MR page
-    assert "Skills the AI uses" in client.get("/merge-requests").text
+    row = db.get_merge_request(mr_id)
+    assert mrlib.selected_skill_ids(row, "ci") == [ci_skill]
+    assert mrlib.selected_skill_ids(row, "cr") == [cr_skill]
+    # the selector renders on this MR's detail page, scoped to it
+    assert "Skills this MR uses" in client.get(f"/merge-requests/{mr_id}").text
 
 
 def test_delete_route(tmp_path):
@@ -316,7 +318,7 @@ def test_generate_mr_suggestions_uses_selected_skills(tmp_path, monkeypatch):
         mr_id, ci_jobs=json.dumps([{"name": "deploy", "status": "failed", "conclusion": "failed"}]), ci_sig="s"
     )
     skill_id = db.create_skill("local", "Custom CI", content="The deploy job needs DEPLOY_TOKEN set.")
-    db.set_state("mr_skills:ci", json.dumps([skill_id]), owner="local")
+    db.update_merge_request(mr_id, ci_skill_ids=str(skill_id))
     seen = {}
 
     async def fake_prompt(self, phase, prompt, cwd=None):
