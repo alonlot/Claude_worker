@@ -6,3 +6,4 @@ config.yaml
 data/
 workspaces/
 demo_workspaces/
+.claude/

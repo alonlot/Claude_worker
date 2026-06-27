@@ -30,9 +30,11 @@ from app.auth import (
 from app.config import (
     Config,
     DEFAULT_OWNER,
+    global_defaults,
     load_config_data,
     load_config_text,
     save_config_text,
+    update_global_defaults,
 )
 from app.code_review import (
     CodeReviewError,
@@ -58,6 +60,83 @@ templates = Jinja2Templates(directory="app/templates")
 
 # Paths reachable without authentication.
 PUBLIC_PATHS = {"/login", "/signup", "/logout", "/healthz"}
+
+# First-run setup wizard: the ordered steps and the copy shown for each.
+ONBOARDING_STEPS = [
+    {
+        "key": "jira",
+        "title": "Jira",
+        "heading": "Connect Jira",
+        "blurb": "The worker scans Jira for tickets to work on. Enter your site and an API token.",
+    },
+    {
+        "key": "git",
+        "title": "Git",
+        "heading": "Connect Git",
+        "blurb": "Where runs clone, branch, and push. Set the repository most of your tickets use.",
+    },
+    {
+        "key": "claude",
+        "title": "Claude",
+        "heading": "Connect Claude",
+        "blurb": "How the agent runs. Point at the Claude CLI and (optionally) pin a model.",
+    },
+]
+ONBOARDING_KEYS = [s["key"] for s in ONBOARDING_STEPS]
+
+
+def _is_first_run(db: Database, owner: str) -> bool:
+    """A genuinely new user: no saved config, no activity, and hasn't skipped.
+
+    Users who already have tickets are past first-run (they may be working off
+    the server's base config), so we don't push them into the wizard.
+    """
+    if db.get_user_config(owner):
+        return False
+    if db.get_state("onboarding_skipped", owner=owner) == "1":
+        return False
+    return db.fetchone("SELECT 1 FROM tickets WHERE owner=? LIMIT 1", (owner,)) is None
+
+
+def _onboarding_section(target: str, form) -> dict[str, object]:
+    """Build the user-config section for one wizard step from posted form values."""
+
+    def s(key: str, default: str = "") -> str:
+        return (form.get(key) or default).strip()
+
+    def i(key: str, default: int) -> int:
+        try:
+            return int(form.get(key) or default)
+        except (TypeError, ValueError):
+            return default
+
+    if target == "jira":
+        return {
+            "url": s("jira_url"),
+            "email": s("jira_email"),
+            "token": s("jira_token"),
+            "jql": s("jira_jql"),
+            "max_results": i("max_results", 25),
+        }
+    if target == "git":
+        # gitlab_host/token are inheritable (blank inherits the global). Repo and
+        # base branch are per-user; base branch falls back to the usual "main".
+        return {
+            "default_repo_url": s("git_default_repo_url"),
+            "default_base_branch": s("git_default_base_branch") or "main",
+            "username": s("git_username"),
+            "token": s("git_token"),
+            "gitlab_host": s("git_gitlab_host"),
+            "gitlab_token": s("git_gitlab_token"),
+        }
+    if target == "claude":
+        return {
+            "command": s("claude_command"),
+            "model": s("claude_model"),
+            "api_key": s("claude_api_key"),
+            "timeout_seconds": i("claude_timeout_seconds", 7200),
+        }
+    raise RuntimeError(f"Unknown onboarding step: {target}")
 
 
 def create_app(config: Config, db: Database) -> FastAPI:
@@ -217,8 +296,88 @@ def create_app(config: Config, db: Database) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
         owner = owner_of(request)
+        if _is_first_run(db, owner):
+            return RedirectResponse("/onboarding", status_code=303)
         ucfg = registry.user_config(owner)
         return templates.TemplateResponse(request, "index.html", context(request, db, ucfg, owner, registry))
+
+    # ---------------- onboarding wizard ----------------
+
+    def _save_onboarding_section(owner: str, target: str, form) -> None:
+        """Merge one wizard step into the user's stored config and rebuild it."""
+        values = _onboarding_section(target, form)
+        data = db.get_user_config(owner)
+        data[target] = {**(data.get(target) or {}), **values}
+        db.set_user_config(owner, data)
+        registry.refresh(owner)
+
+    @app.get("/onboarding", response_class=HTMLResponse)
+    async def onboarding(request: Request):
+        owner = owner_of(request)
+        step = request.query_params.get("step", ONBOARDING_KEYS[0])
+        if step != "done" and step not in ONBOARDING_KEYS:
+            step = ONBOARDING_KEYS[0]
+        stored = db.get_user_config(owner)
+        ucfg = registry.user_config(owner)
+        steps = [{**s, "done": s["key"] in stored} for s in ONBOARDING_STEPS]
+        current = {}
+        if step in ONBOARDING_KEYS:
+            idx = ONBOARDING_KEYS.index(step)
+            meta = ONBOARDING_STEPS[idx]
+            current = {
+                "heading": meta["heading"],
+                "blurb": meta["blurb"],
+                "prev": ONBOARDING_KEYS[idx - 1] if idx > 0 else "",
+            }
+        return templates.TemplateResponse(
+            request,
+            "onboarding.html",
+            {
+                "request": request,
+                "title": ucfg.ui.title,
+                "user": current_user(request),
+                "flash": pop_flash(request),
+                "config": ucfg,
+                "own": stored,
+                "defaults": global_defaults(registry.base_config),
+                "steps": steps,
+                "step": step,
+                "current": current,
+            },
+        )
+
+    @app.post("/onboarding/step/{target}")
+    async def onboarding_save(target: str, request: Request):
+        if target not in ONBOARDING_KEYS:
+            return RedirectResponse("/onboarding", status_code=303)
+        owner = owner_of(request)
+        _save_onboarding_section(owner, target, await request.form())
+        idx = ONBOARDING_KEYS.index(target)
+        nxt = ONBOARDING_KEYS[idx + 1] if idx + 1 < len(ONBOARDING_KEYS) else "done"
+        return RedirectResponse(f"/onboarding?step={nxt}", status_code=303)
+
+    @app.post("/onboarding/test/{target}", response_class=HTMLResponse)
+    async def onboarding_test(target: str, request: Request):
+        if target not in ONBOARDING_KEYS:
+            return HTMLResponse("", status_code=404)
+        owner = owner_of(request)
+        # Persist what was typed so the test runs against the entered values.
+        _save_onboarding_section(owner, target, await request.form())
+        try:
+            message = await run_connection_test(target, registry.user_config(owner))
+            ok = True
+        except Exception as exc:
+            message, ok = str(exc), False
+        return templates.TemplateResponse(
+            request,
+            "_onboarding_test.html",
+            {"request": request, "ok": ok, "message": message},
+        )
+
+    @app.post("/onboarding/skip")
+    async def onboarding_skip(request: Request):
+        db.set_state("onboarding_skipped", "1", owner=owner_of(request))
+        return RedirectResponse("/", status_code=303)
 
     @app.post("/jira/scan")
     async def jira_scan(request: Request):
@@ -923,6 +1082,7 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "title": registry.user_config(owner_of(request)).ui.title,
                 "user": current_user(request),
                 "flash": pop_flash(request),
+                "defaults": global_defaults(request.app.state.config),
                 **admin_overview(db, request.app.state.config),
             },
         )
@@ -1004,6 +1164,43 @@ def create_app(config: Config, db: Database) -> FastAPI:
         request.app.state.flash = (
             f"Deleted user {username}" + (" and purged their data." if purge else ".")
         )
+        return RedirectResponse("/admin", status_code=303)
+
+    @app.post("/admin/defaults")
+    async def admin_set_defaults(
+        request: Request,
+        jira_url: str = Form(""),
+        confluence_base_url: str = Form(""),
+        git_gitlab_host: str = Form(""),
+        git_gitlab_token: str = Form(""),
+        claude_command: str = Form(""),
+        claude_model: str = Form(""),
+    ):
+        if not require_admin(request):
+            return RedirectResponse("/", status_code=303)
+        values = {
+            "jira": {"url": jira_url.strip()},
+            "confluence": {"base_url": confluence_base_url.strip()},
+            "git": {
+                "gitlab_host": git_gitlab_host.strip(),
+                "gitlab_token": git_gitlab_token.strip(),
+            },
+            "claude": {
+                "command": claude_command.strip() or "claude",
+                "model": claude_model.strip(),
+            },
+        }
+        try:
+            new_config = update_global_defaults(values)
+            request.app.state.config = new_config
+            registry.set_base_config(new_config)
+            # Rebuild already-cached user workers so in-flight sessions pick up
+            # the new globals (fresh page loads recompute from base anyway).
+            for worker in registry.active_workers():
+                registry.refresh(worker.owner)
+            request.app.state.flash = "Global defaults saved. Users inherit these unless they set their own."
+        except Exception as exc:
+            request.app.state.flash = f"Could not save global defaults: {exc}"
         return RedirectResponse("/admin", status_code=303)
 
     @app.post("/admin/secret")
@@ -1476,6 +1673,11 @@ def create_app(config: Config, db: Database) -> FastAPI:
                 "config_text": load_config_text() if user.is_admin else "",
                 "claude_args_text": "\n".join(ucfg.claude.args),
                 "excluded_statuses_text": "\n".join(ucfg.jira.excluded_statuses),
+                # The user's OWN stored values (blank where they inherit a global)
+                # and the current org-wide defaults, so inheritable fields show as
+                # empty-with-placeholder instead of freezing the global on save.
+                "own": db.get_user_config(owner),
+                "defaults": global_defaults(registry.base_config),
             },
         )
 

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block content %}
+{# Inheritable fields prefill from the user's own value (blank = inherit the
+   admin's global default, shown as the placeholder). #}
+{% macro ginput(name, section, field, ph='', kind='text') -%}
+  {%- set own_val = (own.get(section) or {}).get(field, '') -%}
+  {%- set gdef = defaults[section][field] -%}
+  <input name="{{ name }}" type="{{ kind }}" value="{{ own_val }}"
+         placeholder="{% if gdef %}Company default: {{ gdef }}{% else %}{{ ph }}{% endif %}">
+{%- endmacro %}
+<section class="wizard">
+  <ol class="wizard-steps">
+    {% for s in steps %}
+    <li class="{% if s.key == step %}current{% elif s.done %}done{% endif %}">
+      <span class="dot">{% if s.done and s.key != step %}✓{% else %}{{ loop.index }}{% endif %}</span>
+      <span class="label">{{ s.title }}</span>
+    </li>
+    {% endfor %}
+  </ol>
+
+  {% if step == 'done' %}
+  <div class="panel wizard-card">
+    <div class="section-title">
+      <h2>You're all set 🎉</h2>
+      <p>Your Jira, Git, and Claude settings are saved under <strong>{{ user.username }}</strong>. You can fine-tune everything (notifications, test gate, delivery, Confluence) any time on the Settings page.</p>
+    </div>
+    <ul class="wizard-summary">
+      <li><strong>Jira</strong> — {{ config.jira.url or "not set" }}</li>
+      <li><strong>Git</strong> — {{ config.git.default_repo_url or "not set" }} (base: {{ config.git.default_base_branch }})</li>
+      <li><strong>Claude</strong> — {{ config.claude.command }}{% if config.claude.model %} · {{ config.claude.model }}{% endif %}</li>
+    </ul>
+    <div class="wizard-actions">
+      <a class="button-link" href="/">Go to the dashboard</a>
+      <a class="button-link secondary" href="/settings">Open full settings</a>
+    </div>
+  </div>
+  {% else %}
+  <div class="panel wizard-card">
+    <div class="section-title">
+      <h2>{{ current.heading }}</h2>
+      <p>{{ current.blurb }}</p>
+    </div>
+
+    <form method="post" action="/onboarding/step/{{ step }}" class="wizard-form">
+      {% if step == 'jira' %}
+      <label>Jira URL {{ ginput('jira_url', 'jira', 'url', 'https://yourco.atlassian.net') }}</label>
+      <label>Email <input name="jira_email" value="{{ config.jira.email }}" placeholder="you@yourco.com" required></label>
+      <label>API token <input name="jira_token" type="password" value="{{ config.jira.token }}" placeholder="Atlassian API token" required></label>
+      <label class="wide">JQL (which tickets to pick up) <textarea class="compact" name="jira_jql">{{ config.jira.jql }}</textarea></label>
+      <label>Max results <input name="max_results" type="number" min="1" value="{{ config.jira.max_results }}"></label>
+      <p class="field-hint">{% if defaults.jira.url %}Your company's Jira site is set by an admin — just add your own email and token. {% endif %}Create a token at id.atlassian.com → Security → API tokens. The same token also works for Confluence skill import later.</p>
+      {% elif step == 'git' %}
+      <label>Default repository URL <input name="git_default_repo_url" value="{{ config.git.default_repo_url }}" placeholder="git@github.com:org/repo.git"></label>
+      <label>Default base branch <input name="git_default_base_branch" value="{{ config.git.default_base_branch }}" placeholder="main"></label>
+      <label>Git username <input name="git_username" value="{{ config.git.username }}"></label>
+      <label>Git token <input name="git_token" type="password" value="{{ config.git.token }}"></label>
+      <label>Self-hosted GitLab host {{ ginput('git_gitlab_host', 'git', 'gitlab_host', 'https://gitlab.mycompany.com (blank = gitlab.com)') }}</label>
+      <label>GitLab API token {{ ginput('git_gitlab_token', 'git', 'gitlab_token', 'blank = use git token', 'password') }}</label>
+      <p class="field-hint">Fields showing a “Company default” are set globally by an admin — leave them blank to inherit. Python owns all Git operations.</p>
+      {% elif step == 'claude' %}
+      <label>Claude command {{ ginput('claude_command', 'claude', 'command', 'claude') }}</label>
+      <label>Model {{ ginput('claude_model', 'claude', 'model', 'e.g. claude-opus-4-8') }}</label>
+      <label>API key <input name="claude_api_key" type="password" value="{{ config.claude.api_key }}" placeholder="required for Docker runs"></label>
+      <label>Timeout seconds <input name="claude_timeout_seconds" type="number" min="30" value="{{ config.claude.timeout_seconds }}"></label>
+      <p class="field-hint">Command and model can be set globally by an admin — leave them blank to inherit. With Docker isolation enabled, the API key is required (the container does not inherit your host login).</p>
+      {% endif %}
+
+      <div class="wizard-actions">
+        {% if current.prev %}<a class="button-link secondary" href="/onboarding?step={{ current.prev }}">Back</a>{% endif %}
+        <button type="button" class="secondary"
+                hx-post="/onboarding/test/{{ step }}"
+                hx-include="closest form"
+                hx-target="#test-result"
+                hx-swap="innerHTML">Test connection</button>
+        <button type="submit">Save &amp; continue</button>
+      </div>
+    </form>
+
+    <div id="test-result" class="test-result" aria-live="polite"></div>
+  </div>
+
+  <form method="post" action="/onboarding/skip" class="wizard-skip">
+    <button class="linklike">Skip setup — I'll configure things later in Settings</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

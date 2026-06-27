@@ -21,6 +21,8 @@ The website is the control surface. The Python worker scans Jira, asks Claude fo
   - Adding LDAP/OAuth/etc. later = one new `AuthProvider` subclass; nothing else changes.
 - **Per-user data separation**: one SQLite DB, every row scoped by `owner`. Users never see each other's tickets, runs, queue, or notifications.
 - **Per-user config**: each user's Jira/Git/Claude credentials are saved under their username (Settings page). Server-level config (auth, Docker, host/port) is admin-only.
+- **Admin global defaults**: org-wide values that aren't personal — the Jira site URL, self-hosted GitLab host, shared GitLab token, Confluence wiki URL, and the Claude command/model — are set once by an admin on the Admin page. Users inherit them automatically (these fields show a "Company default" placeholder on Settings/onboarding); a user who fills the field overrides the global just for themselves. Blank-inherits is enforced in `apply_user_sections` via `INHERITED_FIELDS`. The default repository and base branch stay per-user (each user picks their own repo).
+- **First-run setup wizard**: a brand-new user (no saved config, no tickets yet) is sent to `/onboarding` — a step-by-step Jira → Git → Claude flow with an inline "Test connection" check at each step. They can skip it and use the flat Settings page instead, or re-run it any time via the link on Settings.
 - **Isolated execution**: with `docker.enabled: true`, each run executes the Claude agent inside a throwaway, locked-down container (build the image from `docker/Dockerfile`). Git still runs on the host. With Docker off, runs use host subprocesses (dev/Windows).
 
 ## Setup

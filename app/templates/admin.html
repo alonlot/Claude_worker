@@ -93,6 +93,32 @@
   </div>
 </section>
 
+<section class="panel">
+  <div class="section-title">
+    <h2>Global defaults</h2>
+    <p>Organization-wide settings that apply to every user. A user can still override these on their own Settings page — but if they leave a field blank, it inherits the value you set here. Credentials that are personal (Jira email/token, Git username) stay per-user.</p>
+  </div>
+  <form method="post" action="/admin/defaults" class="settings-form">
+    <fieldset>
+      <legend>Jira &amp; Confluence</legend>
+      <label>Jira site URL <input name="jira_url" value="{{ defaults.jira.url }}" placeholder="https://yourco.atlassian.net"></label>
+      <label>Confluence wiki base URL <input name="confluence_base_url" value="{{ defaults.confluence.base_url }}" placeholder="https://yourco.atlassian.net/wiki (blank = Jira URL + /wiki)"></label>
+    </fieldset>
+    <fieldset>
+      <legend>Git</legend>
+      <label>Self-hosted GitLab host <input name="git_gitlab_host" value="{{ defaults.git.gitlab_host }}" placeholder="https://gitlab.mycompany.com (blank = gitlab.com)"></label>
+      <label>Shared GitLab API token <input name="git_gitlab_token" type="password" value="{{ defaults.git.gitlab_token }}" placeholder="optional service token for reading MRs/CI"></label>
+      <p class="field-hint">The default repository and base branch are per-user — each user sets their own on the Settings page.</p>
+    </fieldset>
+    <fieldset>
+      <legend>Claude</legend>
+      <label>Claude command <input name="claude_command" value="{{ defaults.claude.command }}" placeholder="claude (or an absolute path)"></label>
+      <label>Default model <input name="claude_model" value="{{ defaults.claude.model }}" placeholder="blank = account default"></label>
+    </fieldset>
+    <button>Save global defaults</button>
+  </form>
+</section>
+
 <section class="grid">
   <div class="panel">
     <div class="section-title">

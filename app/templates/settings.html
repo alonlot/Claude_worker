@@ -1,15 +1,24 @@
 {% extends "base.html" %}
 {% block content %}
+{# Inheritable fields: prefill from the user's own value (blank = inherit), and
+   show the admin's global default as the placeholder so saving blank keeps it. #}
+{% macro ginput(name, section, field, ph='', kind='text') -%}
+  {%- set own_val = (own.get(section) or {}).get(field, '') -%}
+  {%- set gdef = defaults[section][field] -%}
+  <input name="{{ name }}" type="{{ kind }}" value="{{ own_val }}"
+         placeholder="{% if gdef %}Company default: {{ gdef }}{% else %}{{ ph }}{% endif %}">
+{%- endmacro %}
 <section class="settings-layout">
   <form method="post" action="/settings/visual" class="panel settings-form">
     <div class="section-title">
       <h2>My Config</h2>
-      <p>These settings are saved under your username ({{ user.username }}). Each user has their own Jira, Git, and Claude credentials.</p>
+      <p>These settings are saved under your username ({{ user.username }}). Each user has their own Jira, Git, and Claude credentials. New here? <a href="/onboarding">Run the guided setup wizard</a>.</p>
+      <p class="field-hint">Fields showing a “Company default” placeholder are set by an admin globally — leave them blank to inherit, or type your own to override just for you.</p>
     </div>
 
     <fieldset>
       <legend>Jira</legend>
-      <label>URL <input name="jira_url" value="{{ config.jira.url }}"></label>
+      <label>URL {{ ginput('jira_url', 'jira', 'url', 'https://yourco.atlassian.net') }}</label>
       <label>Email <input name="jira_email" value="{{ config.jira.email }}"></label>
       <label>Token <input name="jira_token" type="password" value="{{ config.jira.token }}"></label>
       <label class="wide">JQL <textarea class="compact" name="jira_jql">{{ config.jira.jql }}</textarea></label>
@@ -24,7 +33,7 @@
     <fieldset>
       <legend>Confluence</legend>
       <p class="field-hint">Import Confluence pages as skills. Leave email/token blank to reuse your Jira credentials.</p>
-      <label>Wiki base URL <input name="confluence_base_url" value="{{ config.confluence.base_url }}" placeholder="https://yourco.atlassian.net/wiki (blank = Jira URL + /wiki)"></label>
+      <label>Wiki base URL {{ ginput('confluence_base_url', 'confluence', 'base_url', 'https://yourco.atlassian.net/wiki (blank = Jira URL + /wiki)') }}</label>
       <label>Email <input name="confluence_email" value="{{ config.confluence.email }}" placeholder="blank = Jira email"></label>
       <label>Token <input name="confluence_token" type="password" value="{{ config.confluence.token }}" placeholder="blank = Jira token"></label>
     </fieldset>
@@ -36,16 +45,16 @@
       <label>Remote name <input name="git_remote_name" value="{{ config.git.remote_name }}"></label>
       <label>Default repo URL <input name="git_default_repo_url" value="{{ config.git.default_repo_url }}"></label>
       <label>Default base branch <input name="git_default_base_branch" value="{{ config.git.default_base_branch }}"></label>
-      <label>Self-hosted GitLab host <input name="git_gitlab_host" value="{{ config.git.gitlab_host }}" placeholder="https://gitlab.mycompany.com (blank = gitlab.com)"></label>
-      <label>GitLab API token <input name="git_gitlab_token" type="password" value="{{ config.git.gitlab_token }}" placeholder="blank = use git token / GITLAB_TOKEN env"></label>
+      <label>Self-hosted GitLab host {{ ginput('git_gitlab_host', 'git', 'gitlab_host', 'https://gitlab.mycompany.com (blank = gitlab.com)') }}</label>
+      <label>GitLab API token {{ ginput('git_gitlab_token', 'git', 'gitlab_token', 'blank = use git token / GITLAB_TOKEN env', 'password') }}</label>
       <label class="check"><input name="auto_push" type="checkbox" {% if config.git.auto_push %}checked{% endif %}> Auto-push clean done runs</label>
       <label class="check"><input name="auto_merge_request" type="checkbox" {% if config.git.auto_merge_request %}checked{% endif %}> Auto-open merge request after push</label>
     </fieldset>
 
     <fieldset>
       <legend>Claude</legend>
-      <label>Command <input name="claude_command" value="{{ config.claude.command }}"></label>
-      <label>Model <input name="claude_model" value="{{ config.claude.model }}"></label>
+      <label>Command {{ ginput('claude_command', 'claude', 'command', 'claude') }}</label>
+      <label>Model {{ ginput('claude_model', 'claude', 'model', 'blank = account default') }}</label>
       <label>API key <input name="claude_api_key" type="password" value="{{ config.claude.api_key }}"></label>
       <label>Timeout seconds <input name="claude_timeout_seconds" type="number" min="30" value="{{ config.claude.timeout_seconds }}"></label>
       <label class="wide">Args <textarea class="compact" name="claude_args">{{ claude_args_text }}</textarea></label>

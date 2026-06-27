@@ -19,6 +19,18 @@ DEFAULT_OWNER = "local"
 # Everything else (app, auth, docker) is server-level and only an admin edits it.
 USER_SECTIONS = ("jira", "git", "claude", "ui", "delivery", "notify", "test_gate", "confluence")
 
+# Organization-wide fields an admin sets once on the Admin page (stored in the
+# server config.yaml). They are the same shape as the per-user fields, but a
+# blank per-user value INHERITS the global default instead of overriding it with
+# emptiness. A user who fills the field still overrides the global for themselves.
+# Keyed by section -> tuple of field names.
+INHERITED_FIELDS: dict[str, tuple[str, ...]] = {
+    "jira": ("url",),
+    "git": ("gitlab_host", "gitlab_token"),
+    "claude": ("command", "model"),
+    "confluence": ("base_url",),
+}
+
 
 class IndentedSafeDumper(yaml.SafeDumper):
     def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:
@@ -284,8 +296,37 @@ def apply_user_sections(base: Config, sections: dict[str, Any] | None) -> Config
     for name in USER_SECTIONS:
         incoming = (sections or {}).get(name)
         if isinstance(incoming, dict):
-            data[name] = {**data[name], **incoming}
+            merged = {**data[name], **incoming}
+            # For org-wide fields, a blank per-user value inherits the global
+            # default from the base config rather than blanking it out.
+            for fld in INHERITED_FIELDS.get(name, ()):
+                if not str(incoming.get(fld, "") or "").strip():
+                    merged[fld] = data[name].get(fld, "")
+            data[name] = merged
     return _config_from_data(data)
+
+
+def global_defaults(config: Config) -> dict[str, dict[str, Any]]:
+    """The current org-wide default values (the inheritable fields of the base config)."""
+    return {
+        section: {fld: getattr(getattr(config, section), fld) for fld in flds}
+        for section, flds in INHERITED_FIELDS.items()
+    }
+
+
+def update_global_defaults(values: dict[str, dict[str, Any]], path: Path | str = CONFIG_PATH) -> Config:
+    """Write the inheritable fields into the server config.yaml, preserving the rest."""
+    data = load_config_data(path)
+    for section, flds in INHERITED_FIELDS.items():
+        incoming = values.get(section) or {}
+        target = data.setdefault(section, {})
+        if not isinstance(target, dict):
+            target = {}
+            data[section] = target
+        for fld in flds:
+            if fld in incoming:
+                target[fld] = incoming[fld]
+    return write_config_data(data, path)
 
 
 def load_config_data(path: Path | str = CONFIG_PATH) -> dict[str, Any]:
